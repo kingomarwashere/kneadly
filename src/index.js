@@ -54,6 +54,8 @@ app.get('/sitemap.xml', async (c) => {
     200, { 'Content-Type': 'application/xml', 'Cache-Control': 'public, max-age=3600' })
 })
 
+app.get('/healthz', (c) => c.json({ ok: true, app: 'kneadly' }))
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 app.route('/api', apiRoutes)
 app.route('/webhooks', webhookRoutes)
