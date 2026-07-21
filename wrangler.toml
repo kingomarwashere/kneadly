@@ -1,0 +1,16 @@
+name = "kneadly"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kneadly"
+database_id = "795c6a38-c6e9-4221-b429-4890a39a8934"
+
+[[routes]]
+pattern = "kneadly.theradicalparty.com"
+custom_domain = true
+
+[vars]
+BASE_URL = "https://kneadly.theradicalparty.com"
