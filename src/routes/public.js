@@ -7,9 +7,48 @@ import { genId } from '../lib/auth.js'
 
 const app = new Hono()
 
+// Demo shops featured on the landing page so visitors can test the real flow
+const DEMO_SLUGS = ['serenity-massage-bodywork', 'thai-lotus-massage']
+
 // ─── Marketing landing ───────────────────────────────────────────────────────
-app.get('/', (c) => {
+app.get('/', async (c) => {
   const user = c.get('user')
+
+  // Load featured demos (ignore any that have been removed)
+  const placeholders = DEMO_SLUGS.map(() => '?').join(',')
+  const demos = (await c.env.DB.prepare(
+    `SELECT s.name, s.slug, s.tagline, s.emoji, s.accent, s.suburb, s.state,
+       (SELECT COUNT(*) FROM services v WHERE v.shop_id = s.id AND v.is_active = 1) AS services,
+       (SELECT COUNT(*) FROM staff t WHERE t.shop_id = s.id AND t.is_active = 1) AS staff,
+       (SELECT MIN(price_cents) FROM services v WHERE v.shop_id = s.id AND v.is_active = 1) AS from_price,
+       s.currency
+     FROM shops s WHERE s.slug IN (${placeholders}) AND s.is_published = 1`
+  ).bind(...DEMO_SLUGS).all()).results || []
+
+  const demoSection = demos.length ? `
+  <div class="wrap" style="padding:30px 20px 10px" id="try">
+    <div style="text-align:center;margin-bottom:22px">
+      <span class="pill">Try it — no signup</span>
+      <h2 style="margin-top:12px">See a real booking page</h2>
+      <p class="muted" style="max-width:520px;margin:0 auto">These are live example shops. Click through, pick a service and time, and make a test booking — exactly what your clients would do.</p>
+    </div>
+    <div class="grid g2">
+      ${demos.map(d => `<a class="card svc" href="/${d.slug}" style="padding:0;overflow:hidden;text-decoration:none;color:inherit">
+        <div style="padding:22px 24px;background:linear-gradient(135deg,${esc(d.accent)},#0b1f1d);color:#fff">
+          <div style="font-size:2rem">${esc(d.emoji)}</div>
+          <div style="font-family:'Fraunces',serif;font-size:1.35rem;font-weight:600;margin-top:4px">${esc(d.name)}</div>
+          <div style="opacity:.85;font-size:.9rem">${esc([d.suburb, d.state].filter(Boolean).join(', '))}</div>
+        </div>
+        <div style="padding:16px 24px">
+          ${d.tagline ? `<div style="margin-bottom:8px">${esc(d.tagline)}</div>` : ''}
+          <div class="muted" style="font-size:.85rem">${d.services} services · ${d.staff} therapist${d.staff === 1 ? '' : 's'}${d.from_price != null ? ` · from ${money(d.from_price, d.currency)}` : ''}</div>
+          <div class="btn sm" style="margin-top:14px">Book a test appointment →</div>
+        </div>
+      </a>`).join('')}
+    </div>
+    <p class="muted" style="text-align:center;font-size:.82rem;margin-top:16px">Want to see the owner side too? Log in with <strong>demo@kneadly.co</strong> / <strong>massage2026</strong> to explore a live dashboard.</p>
+  </div>` : ''
+
   return c.html(layout('Kneadly — Online booking for massage shops', `
   ${siteNav(user)}
   <div class="wrap" style="text-align:center;padding:60px 20px 40px">
@@ -21,10 +60,12 @@ app.get('/', (c) => {
     </p>
     <div class="row" style="justify-content:center;flex:0">
       <a class="btn gold" href="/signup">Create your booking page →</a>
-      <a class="btn ghost" href="#how">See how it works</a>
+      <a class="btn ghost" href="#try">Try a live demo</a>
     </div>
     <p class="muted" style="margin-top:14px;font-size:.85rem">Free to set up · No app to install · Live in 2 minutes</p>
   </div>
+
+  ${demoSection}
 
   <div class="wrap grid g3" style="padding:20px 20px 10px" id="how">
     ${[
