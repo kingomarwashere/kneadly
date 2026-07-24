@@ -9,6 +9,22 @@ import publicRoutes from './routes/public.js'
 
 const app = new Hono()
 
+// Canonical-domain redirect: Kneadly moved from theradicalparty.com to
+// bored.investments (neutral SaaS, off the political brand). Keep the old host
+// alive so existing links — including Google Maps booking links — 301 across.
+app.use('*', async (c, next) => {
+  const url = new URL(c.req.url)
+  // Skip machine endpoints: Stripe webhooks + API callers don't follow 301s,
+  // and both hosts hit the same Worker + D1, so those keep working on either
+  // domain until integrations are repointed.
+  const machine = url.pathname.startsWith('/webhooks') || url.pathname.startsWith('/api')
+  if (url.hostname === 'kneadly.theradicalparty.com' && !machine) {
+    url.hostname = 'kneadly.bored.investments'
+    return c.redirect(url.toString(), 301)
+  }
+  await next()
+})
+
 // Attach logged-in owner (if any) to the request context
 app.use('*', async (c, next) => {
   const sessionId = getCookie(c, 'kneadly_session')
@@ -39,12 +55,12 @@ app.get('/og.svg', (c) => {
 })
 
 app.get('/robots.txt', (c) => {
-  const base = c.env.BASE_URL || 'https://kneadly.theradicalparty.com'
+  const base = c.env.BASE_URL || 'https://kneadly.bored.investments'
   return c.text(`User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /api\nDisallow: /webhooks\nSitemap: ${base}/sitemap.xml`)
 })
 
 app.get('/sitemap.xml', async (c) => {
-  const base = c.env.BASE_URL || 'https://kneadly.theradicalparty.com'
+  const base = c.env.BASE_URL || 'https://kneadly.bored.investments'
   const rows = await c.env.DB.prepare(
     `SELECT slug FROM shops WHERE is_published = 1 ORDER BY created_at DESC`).all()
   const urls = [`<url><loc>${base}/</loc><priority>1.0</priority></url>`]

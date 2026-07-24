@@ -107,7 +107,7 @@ app.get('/:slug', async (c) => {
   const staff = (await db.prepare(
     'SELECT * FROM staff WHERE shop_id = ? AND is_active = 1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
 
-  const base = c.env.BASE_URL || 'https://kneadly.theradicalparty.com'
+  const base = c.env.BASE_URL || 'https://kneadly.bored.investments'
   const addr = [shop.address, shop.suburb, shop.state, shop.postcode].filter(Boolean).join(', ')
 
   const jsonld = {
@@ -310,7 +310,7 @@ app.post('/:slug/book', async (c) => {
 
   // Payment required → Stripe Checkout
   if (status === 'pending_payment') {
-    const base = c.env.BASE_URL || 'https://kneadly.theradicalparty.com'
+    const base = c.env.BASE_URL || 'https://kneadly.bored.investments'
     try {
       const session = await stripeClient(c.env.STRIPE_SECRET_KEY).createCheckoutSession({
         mode: 'payment',

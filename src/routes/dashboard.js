@@ -60,7 +60,7 @@ const upcomingWhere = `status IN ('confirmed','pending_payment') AND start_time 
 // ─── Overview ────────────────────────────────────────────────────────────────
 app.get('/', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
-  const base = c.env.BASE_URL || 'https://kneadly.theradicalparty.com'
+  const base = c.env.BASE_URL || 'https://kneadly.bored.investments'
   const link = `${base}/${shop.slug}`
   const welcome = c.req.query('welcome')
 
