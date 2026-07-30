@@ -38,6 +38,7 @@ function shell(c, active, title, body, notice) {
       ${body}
     </main>
   </div>`, {
+    lang: c.get('lang'),
     css: `
     .dwrap{display:flex;min-height:100vh;max-width:1200px;margin:0 auto}
     .dside{width:220px;flex:0 0 220px;padding:18px 12px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:2px;position:sticky;top:0;height:100vh}

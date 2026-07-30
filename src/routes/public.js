@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { layout, siteNav, money, esc } from '../lib/views.js'
+import { t, localeFor } from '../lib/i18n.js'
 import { getShopBySlug, eligibleStaff, slotsForDate } from '../lib/booking.js'
 import { formatBookingTime, formatDate } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
@@ -13,6 +14,7 @@ const DEMO_SLUGS = ['serenity-massage-bodywork', 'thai-lotus-massage']
 // ─── Marketing landing ───────────────────────────────────────────────────────
 app.get('/', async (c) => {
   const user = c.get('user')
+  const lang = c.get('lang')
 
   // Load featured demos (ignore any that have been removed)
   const placeholders = DEMO_SLUGS.map(() => '?').join(',')
@@ -28,9 +30,9 @@ app.get('/', async (c) => {
   const demoSection = demos.length ? `
   <div class="wrap" style="padding:30px 20px 10px" id="try">
     <div style="text-align:center;margin-bottom:22px">
-      <span class="pill">Try it — no signup</span>
-      <h2 style="margin-top:12px">See a real booking page</h2>
-      <p class="muted" style="max-width:520px;margin:0 auto">These are live example shops. Click through, pick a service and time, and make a test booking — exactly what your clients would do.</p>
+      <span class="pill">${t(lang, 'demo_pill')}</span>
+      <h2 style="margin-top:12px">${t(lang, 'demo_title')}</h2>
+      <p class="muted" style="max-width:520px;margin:0 auto">${t(lang, 'demo_sub')}</p>
     </div>
     <div class="grid g2">
       ${demos.map(d => `<a class="card svc" href="/${d.slug}" style="padding:0;overflow:hidden;text-decoration:none;color:inherit">
@@ -41,52 +43,52 @@ app.get('/', async (c) => {
         </div>
         <div style="padding:16px 24px">
           ${d.tagline ? `<div style="margin-bottom:8px">${esc(d.tagline)}</div>` : ''}
-          <div class="muted" style="font-size:.85rem">${d.services} services · ${d.staff} therapist${d.staff === 1 ? '' : 's'}${d.from_price != null ? ` · from ${money(d.from_price, d.currency)}` : ''}</div>
-          <div class="btn sm" style="margin-top:14px">Book a test appointment →</div>
+          <div class="muted" style="font-size:.85rem">${t(lang, 'count_services', { n: d.services })} · ${t(lang, 'count_therapists', { n: d.staff })}${d.from_price != null ? ` · ${t(lang, 'from_price', { price: money(d.from_price, d.currency) })}` : ''}</div>
+          <div class="btn sm" style="margin-top:14px">${t(lang, 'demo_book_test')}</div>
         </div>
       </a>`).join('')}
     </div>
-    <p class="muted" style="text-align:center;font-size:.82rem;margin-top:16px">Want to see the owner side too? Log in with <strong>demo@alisa.co</strong> / <strong>massage2026</strong> to explore a live dashboard.</p>
+    <p class="muted" style="text-align:center;font-size:.82rem;margin-top:16px">${t(lang, 'demo_owner_1')} <strong>demo@alisa.co</strong> / <strong>massage2026</strong> ${t(lang, 'demo_owner_2')}</p>
   </div>` : ''
 
   return c.html(layout('Alisa — Online booking for massage shops', `
-  ${siteNav(user)}
+  ${siteNav(user, lang)}
   <div class="wrap" style="text-align:center;padding:60px 20px 40px">
-    <span class="pill">For massage &amp; bodywork shops</span>
-    <h1 style="margin-top:18px">Let clients book you<br>straight from Google.</h1>
+    <span class="pill">${t(lang, 'hero_pill')}</span>
+    <h1 style="margin-top:18px">${t(lang, 'hero_title_1')}<br>${t(lang, 'hero_title_2')}</h1>
     <p class="muted" style="font-size:1.15rem;max-width:600px;margin:0 auto 28px">
-      Your own booking page, deposits that stop no-shows, and a link you can drop
-      into your Google Business Profile so customers book you from Maps.
+      ${t(lang, 'hero_sub')}
     </p>
     <div class="row" style="justify-content:center;flex:0">
-      <a class="btn gold" href="/signup">Create your booking page →</a>
-      <a class="btn ghost" href="#try">Try a live demo</a>
+      <a class="btn gold" href="/signup">${t(lang, 'hero_cta')}</a>
+      <a class="btn ghost" href="#try">${t(lang, 'hero_demo')}</a>
     </div>
-    <p class="muted" style="margin-top:14px;font-size:.85rem">Free to set up · No app to install · Live in 2 minutes</p>
+    <p class="muted" style="margin-top:14px;font-size:.85rem">${t(lang, 'hero_note')}</p>
   </div>
 
   ${demoSection}
 
   <div class="wrap grid g3" style="padding:20px 20px 10px" id="how">
     ${[
-      ['🗓️', 'Book anytime', 'Clients pick a service, a therapist and a time. You wake up to a full calendar — no phone tag.'],
-      ['💳', 'Deposits stop no-shows', 'Take a deposit at booking. If they cancel late, you keep it. If they show, it comes off the bill.'],
-      ['📍', 'Right from Google Maps', 'Add your Alisa link to your Google Business Profile. Customers tap “Book” on Maps and land on your page.'],
-      ['🧖', 'Multiple therapists', 'Add your whole team, set each person’s hours, and let clients choose “anyone available”.'],
-      ['⏱️', 'Set your own hours', 'Per-therapist weekly schedules. Alisa only ever offers times you’re actually open.'],
-      ['🔗', 'One shareable page', 'Put it in your Instagram bio, on flyers, in texts. Everything books through one clean link.'],
-    ].map(([e, t, d]) => `<div class="card" style="padding:24px"><div style="font-size:2rem">${e}</div>
-      <h3 style="margin:.5em 0 .2em;font-size:1.15rem">${t}</h3><p class="muted" style="margin:0">${d}</p></div>`).join('')}
+      ['🗓️', 'feat1_t', 'feat1_d'],
+      ['💳', 'feat2_t', 'feat2_d'],
+      ['📍', 'feat3_t', 'feat3_d'],
+      ['🧖', 'feat4_t', 'feat4_d'],
+      ['⏱️', 'feat5_t', 'feat5_d'],
+      ['🔗', 'feat6_t', 'feat6_d'],
+    ].map(([e, tk, dk]) => `<div class="card" style="padding:24px"><div style="font-size:2rem">${e}</div>
+      <h3 style="margin:.5em 0 .2em;font-size:1.15rem">${t(lang, tk)}</h3><p class="muted" style="margin:0">${t(lang, dk)}</p></div>`).join('')}
   </div>
 
   <div class="wrap" style="padding:50px 20px">
     <div class="card" style="padding:34px;text-align:center;background:linear-gradient(135deg,#0f766e,#0b5750);color:#fff;border:none">
-      <h2 style="color:#fff">Ready to fill your table?</h2>
-      <p style="color:#a7d3ce;max-width:460px;margin:0 auto 22px">Set up your services and hours, then share your link. That’s it.</p>
-      <a class="btn gold" href="/signup">Start free →</a>
+      <h2 style="color:#fff">${t(lang, 'cta_title')}</h2>
+      <p style="color:#a7d3ce;max-width:460px;margin:0 auto 22px">${t(lang, 'cta_sub')}</p>
+      <a class="btn gold" href="/signup">${t(lang, 'cta_btn')}</a>
     </div>
   </div>
   `, {
+    lang,
     jsonld: {
       '@context': 'https://schema.org', '@type': 'SoftwareApplication',
       name: 'Alisa', applicationCategory: 'BusinessApplication',
@@ -99,6 +101,7 @@ app.get('/', async (c) => {
 // ─── Shop public page ────────────────────────────────────────────────────────
 app.get('/:slug', async (c) => {
   const db = c.env.DB
+  const lang = c.get('lang')
   const shop = await getShopBySlug(db, c.req.param('slug'))
   if (!shop || !shop.is_published) return c.notFound()
 
@@ -136,13 +139,13 @@ app.get('/:slug', async (c) => {
       <div>
         <div style="font-weight:600">${esc(s.name)}</div>
         ${s.description ? `<div class="muted" style="font-size:.88rem">${esc(s.description)}</div>` : ''}
-        <div class="muted" style="font-size:.85rem;margin-top:4px">⏱ ${s.duration_minutes} min · ${money(s.price_cents, shop.currency)}</div>
+        <div class="muted" style="font-size:.85rem;margin-top:4px">⏱ ${s.duration_minutes} ${t(lang, 'min')} · ${money(s.price_cents, shop.currency)}</div>
       </div>
-      <a class="btn sm" href="/${shop.slug}/book?service=${s.id}">Book</a>
+      <a class="btn sm" href="/${shop.slug}/book?service=${s.id}">${t(lang, 'book')}</a>
     </div>`
 
-  return c.html(layout(`${shop.name} — Book online`, `
-  ${siteNav(c.get('user'))}
+  return c.html(layout(`${shop.name} — ${t(lang, 'book_online')}`, `
+  ${siteNav(c.get('user'), lang)}
   <div class="wrap" style="padding:14px 20px 0">
     <div class="card" style="padding:30px;background:linear-gradient(135deg,${esc(shop.accent)},#0b5750);color:#fff;border:none">
       <div style="font-size:2.6rem">${esc(shop.emoji)}</div>
@@ -154,12 +157,12 @@ app.get('/:slug', async (c) => {
 
   <div class="wrap grid g2" style="padding:26px 20px;align-items:start">
     <div>
-      <h2>Services</h2>
-      ${services.length ? services.map(serviceCard).join('') : `<p class="muted">No services listed yet.</p>`}
+      <h2>${t(lang, 'services')}</h2>
+      ${services.length ? services.map(serviceCard).join('') : `<p class="muted">${t(lang, 'no_services')}</p>`}
     </div>
     <div>
-      ${shop.about ? `<h2>About</h2><div class="card" style="padding:20px"><p class="muted" style="margin:0;white-space:pre-wrap">${esc(shop.about)}</p></div>` : ''}
-      ${staff.length ? `<h2 style="margin-top:22px">Our therapists</h2>
+      ${shop.about ? `<h2>${t(lang, 'about')}</h2><div class="card" style="padding:20px"><p class="muted" style="margin:0;white-space:pre-wrap">${esc(shop.about)}</p></div>` : ''}
+      ${staff.length ? `<h2 style="margin-top:22px">${t(lang, 'our_therapists')}</h2>
         <div class="card" style="padding:8px 20px">
         ${staff.map(st => `<div style="padding:12px 0;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center">
           <div style="font-size:1.6rem">${esc(st.emoji)}</div>
@@ -168,12 +171,13 @@ app.get('/:slug', async (c) => {
         </div>` : ''}
     </div>
   </div>
-  `, { accent: shop.accent, description: shop.tagline || `Book ${shop.name} online.`, jsonld }))
+  `, { accent: shop.accent, lang, description: shop.tagline || `Book ${shop.name} online.`, jsonld }))
 })
 
 // ─── Booking flow ────────────────────────────────────────────────────────────
 app.get('/:slug/book', async (c) => {
   const db = c.env.DB
+  const lang = c.get('lang')
   const shop = await getShopBySlug(db, c.req.param('slug'))
   if (!shop || !shop.is_published) return c.notFound()
 
@@ -185,22 +189,31 @@ app.get('/:slug/book', async (c) => {
   // No service chosen → show the picker
   if (!service) {
     const services = (await db.prepare('SELECT * FROM services WHERE shop_id = ? AND is_active = 1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
-    return c.html(layout(`Book — ${shop.name}`, `${siteNav(c.get('user'))}<div class="wrap narrow" style="padding:30px 20px">
-      <a href="/${shop.slug}" class="muted">← ${esc(shop.name)}</a><h2 style="margin-top:10px">Choose a service</h2>
+    return c.html(layout(`${t(lang, 'book')} — ${shop.name}`, `${siteNav(c.get('user'), lang)}<div class="wrap narrow" style="padding:30px 20px">
+      <a href="/${shop.slug}" class="muted">← ${esc(shop.name)}</a><h2 style="margin-top:10px">${t(lang, 'choose_service')}</h2>
       ${services.map(s => `<a class="card svc" style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;text-decoration:none;color:inherit" href="/${shop.slug}/book?service=${s.id}">
-        <div><div style="font-weight:600">${esc(s.name)}</div><div class="muted" style="font-size:.85rem">${s.duration_minutes} min · ${money(s.price_cents, shop.currency)}</div></div><span class="btn sm">Select</span></a>`).join('')}
-      </div>`, { accent: shop.accent }))
+        <div><div style="font-weight:600">${esc(s.name)}</div><div class="muted" style="font-size:.85rem">${s.duration_minutes} ${t(lang, 'min')} · ${money(s.price_cents, shop.currency)}</div></div><span class="btn sm">${t(lang, 'select')}</span></a>`).join('')}
+      </div>`, { accent: shop.accent, lang }))
   }
 
   const staff = await eligibleStaff(db, shop.id, service.id)
   const depositCents = Math.round(service.price_cents * shop.deposit_pct / 100)
 
-  return c.html(layout(`Book ${service.name} — ${shop.name}`, `
-  ${siteNav(c.get('user'))}
+  const T = {
+    loading: t(lang, 'loading'),
+    choose_date_first: t(lang, 'choose_date_first'),
+    no_availability: t(lang, 'no_availability'),
+    fully_booked: t(lang, 'fully_booked'),
+    pick_time_btn: t(lang, 'pick_time_btn'),
+    confirm: depositCents > 0 ? t(lang, 'confirm_pay') : t(lang, 'confirm_book'),
+  }
+
+  return c.html(layout(`${t(lang, 'book')} ${service.name} — ${shop.name}`, `
+  ${siteNav(c.get('user'), lang)}
   <div class="wrap narrow" style="padding:26px 20px">
     <a href="/${shop.slug}" class="muted">← ${esc(shop.name)}</a>
     <div class="card" style="padding:26px;margin-top:12px">
-      <div class="pill">${service.duration_minutes} min · ${money(service.price_cents, shop.currency)}</div>
+      <div class="pill">${service.duration_minutes} ${t(lang, 'min')} · ${money(service.price_cents, shop.currency)}</div>
       <h2 style="margin:.4em 0 0">${esc(service.name)}</h2>
       ${service.description ? `<p class="muted" style="margin:.3em 0 0">${esc(service.description)}</p>` : ''}
 
@@ -208,66 +221,67 @@ app.get('/:slug/book', async (c) => {
         <input type="hidden" name="service" value="${service.id}">
         <input type="hidden" name="start" id="start">
 
-        <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">1. Choose a therapist</h3>
+        <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">${t(lang, 'step1')}</h3>
         <select name="staff" id="staff">
-          <option value="any">Anyone available</option>
+          <option value="any">${t(lang, 'anyone')}</option>
           ${staff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}
         </select>
 
-        <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">2. Pick a date</h3>
-        <div id="dates" class="row" style="gap:8px"><span class="muted">Loading…</span></div>
+        <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">${t(lang, 'step2')}</h3>
+        <div id="dates" class="row" style="gap:8px"><span class="muted">${t(lang, 'loading')}</span></div>
 
-        <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">3. Pick a time</h3>
-        <div id="times" class="row" style="gap:8px"><span class="muted">Choose a date first.</span></div>
+        <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">${t(lang, 'step3')}</h3>
+        <div id="times" class="row" style="gap:8px"><span class="muted">${t(lang, 'choose_date_first')}</span></div>
 
-        <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">4. Your details</h3>
-        <div class="field"><label>Full name</label><input name="name" required></div>
-        <div class="field"><label>Email</label><input type="email" name="email" required></div>
-        <div class="field"><label>Mobile</label><input name="phone" placeholder="Optional"></div>
-        <div class="field"><label>Anything we should know?</label><textarea name="notes" rows="2" placeholder="Injuries, pressure preference, parking…"></textarea></div>
+        <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">${t(lang, 'step4')}</h3>
+        <div class="field"><label>${t(lang, 'full_name')}</label><input name="name" required></div>
+        <div class="field"><label>${t(lang, 'email')}</label><input type="email" name="email" required></div>
+        <div class="field"><label>${t(lang, 'mobile')}</label><input name="phone" placeholder="${t(lang, 'optional')}"></div>
+        <div class="field"><label>${t(lang, 'notes_label')}</label><textarea name="notes" rows="2" placeholder="${t(lang, 'notes_ph')}"></textarea></div>
 
         <div class="card" style="padding:14px 16px;background:#f6f2ec;border-style:dashed;margin-bottom:16px">
           ${depositCents > 0
-            ? `💳 <strong>${money(depositCents, shop.currency)} deposit</strong> to confirm — the rest (${money(service.price_cents - depositCents, shop.currency)}) is paid in-store. Free cancellation up to ${shop.cancellation_hours}h before.`
-            : `No deposit required — just confirm your spot.`}
+            ? t(lang, 'deposit_line', { deposit: money(depositCents, shop.currency), rest: money(service.price_cents - depositCents, shop.currency), hours: shop.cancellation_hours })
+            : t(lang, 'no_deposit_line')}
         </div>
 
-        <button class="btn" style="width:100%" id="submit" disabled>Pick a time to continue</button>
+        <button class="btn" style="width:100%" id="submit" disabled>${t(lang, 'pick_time_btn')}</button>
       </form>
     </div>
   </div>
 
   <script>
   const slug=${JSON.stringify(shop.slug)}, service=${JSON.stringify(service.id)};
+  const T=${JSON.stringify(T)}, LOCALE=${JSON.stringify(localeFor(lang))};
   const datesEl=document.getElementById('dates'), timesEl=document.getElementById('times');
   const startEl=document.getElementById('start'), submitEl=document.getElementById('submit'), staffEl=document.getElementById('staff');
   let selDate=null;
-  const fmtDate=ds=>{const d=new Date(ds+'T12:00:00Z');return d.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'})};
+  const fmtDate=ds=>{const d=new Date(ds+'T12:00:00Z');return d.toLocaleDateString(LOCALE,{weekday:'short',day:'numeric',month:'short'})};
   async function loadDates(){
-    startEl.value='';submitEl.disabled=true;submitEl.textContent='Pick a time to continue';
-    timesEl.innerHTML='<span class="muted">Choose a date first.</span>';
-    datesEl.innerHTML='<span class="muted">Loading…</span>';
+    startEl.value='';submitEl.disabled=true;submitEl.textContent=T.pick_time_btn;
+    timesEl.innerHTML='<span class="muted">'+T.choose_date_first+'</span>';
+    datesEl.innerHTML='<span class="muted">'+T.loading+'</span>';
     const r=await fetch('/api/slots?shop='+slug+'&service='+service+'&staff='+staffEl.value);
     const {dates}=await r.json();
-    if(!dates||!dates.length){datesEl.innerHTML='<span class="muted">No availability right now.</span>';return;}
+    if(!dates||!dates.length){datesEl.innerHTML='<span class="muted">'+T.no_availability+'</span>';return;}
     datesEl.innerHTML='';
     dates.slice(0,21).forEach(ds=>{const b=document.createElement('button');b.type='button';b.className='btn ghost sm';b.textContent=fmtDate(ds);
       b.onclick=()=>{selDate=ds;[...datesEl.children].forEach(x=>x.classList.add('ghost'));b.classList.remove('ghost');loadTimes(ds)};datesEl.appendChild(b)});
   }
   async function loadTimes(ds){
-    startEl.value='';submitEl.disabled=true;submitEl.textContent='Pick a time to continue';
-    timesEl.innerHTML='<span class="muted">Loading…</span>';
+    startEl.value='';submitEl.disabled=true;submitEl.textContent=T.pick_time_btn;
+    timesEl.innerHTML='<span class="muted">'+T.loading+'</span>';
     const r=await fetch('/api/slots?shop='+slug+'&service='+service+'&staff='+staffEl.value+'&date='+ds);
     const {slots}=await r.json();
-    if(!slots||!slots.length){timesEl.innerHTML='<span class="muted">Fully booked — try another day.</span>';return;}
+    if(!slots||!slots.length){timesEl.innerHTML='<span class="muted">'+T.fully_booked+'</span>';return;}
     timesEl.innerHTML='';
     slots.forEach(s=>{const b=document.createElement('button');b.type='button';b.className='btn ghost sm';b.textContent=s.display;
       b.onclick=()=>{startEl.value=s.unix;[...timesEl.children].forEach(x=>x.classList.add('ghost'));b.classList.remove('ghost');
-        submitEl.disabled=false;submitEl.textContent=${depositCents > 0 ? `'Confirm & pay deposit →'` : `'Confirm booking →'`}};timesEl.appendChild(b)});
+        submitEl.disabled=false;submitEl.textContent=T.confirm};timesEl.appendChild(b)});
   }
   staffEl.onchange=loadDates;loadDates();
   </script>
-  `, { accent: shop.accent }))
+  `, { accent: shop.accent, lang }))
 })
 
 app.post('/:slug/book', async (c) => {
@@ -343,6 +357,7 @@ app.post('/:slug/book', async (c) => {
 // ─── Confirmation ────────────────────────────────────────────────────────────
 app.get('/:slug/booked/:id', async (c) => {
   const db = c.env.DB
+  const lang = c.get('lang')
   const shop = await getShopBySlug(db, c.req.param('slug'))
   if (!shop) return c.notFound()
   const b = await db.prepare('SELECT * FROM bookings WHERE id = ? AND shop_id = ?').bind(c.req.param('id'), shop.id).first()
@@ -352,24 +367,24 @@ app.get('/:slug/booked/:id', async (c) => {
   const paid = b.status === 'confirmed' || b.status === 'completed'
   const pending = b.status === 'pending_payment'
 
-  return c.html(layout(`Booking confirmed — ${shop.name}`, `
-  ${siteNav(c.get('user'))}
+  return c.html(layout(`${t(lang, 'booking_confirmed')} — ${shop.name}`, `
+  ${siteNav(c.get('user'), lang)}
   <div class="wrap narrow" style="padding:40px 20px;text-align:center">
     <div style="font-size:3rem">${pending ? '⏳' : '✅'}</div>
-    <h2>${pending ? 'Almost there…' : 'You’re booked in!'}</h2>
-    <p class="muted">${pending ? 'We’re confirming your deposit. This page will update shortly.' : `See you soon at ${esc(shop.name)}.`}</p>
+    <h2>${pending ? t(lang, 'almost_there') : t(lang, 'booked_in')}</h2>
+    <p class="muted">${pending ? t(lang, 'pending_sub') : t(lang, 'done_sub', { shop: esc(shop.name) })}</p>
     <div class="card" style="padding:22px;text-align:left;margin-top:18px">
-      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">Service</span><strong>${esc(b.service_name)}</strong></div>
-      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">Therapist</span><strong>${esc(b.staff_name || 'Our team')}</strong></div>
-      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">When</span><strong>${formatBookingTime(b.start_time, shop.timezone)}</strong></div>
-      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">Price</span><strong>${money(b.price_cents, shop.currency)}</strong></div>
-      ${b.deposit_cents > 0 ? `<div style="display:flex;justify-content:space-between;padding:8px 0"><span class="muted">Deposit paid</span><strong>${money(b.deposit_cents, shop.currency)}</strong></div>` : ''}
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_service')}</span><strong>${esc(b.service_name)}</strong></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_therapist')}</span><strong>${esc(b.staff_name || t(lang, 'our_team'))}</strong></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_when')}</span><strong>${formatBookingTime(b.start_time, shop.timezone)}</strong></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_price')}</span><strong>${money(b.price_cents, shop.currency)}</strong></div>
+      ${b.deposit_cents > 0 ? `<div style="display:flex;justify-content:space-between;padding:8px 0"><span class="muted">${t(lang, 'c_deposit_paid')}</span><strong>${money(b.deposit_cents, shop.currency)}</strong></div>` : ''}
     </div>
-    <p class="muted" style="font-size:.85rem;margin-top:16px">A confirmation was sent to ${esc(b.customer_email)}. Need to change it? Call ${esc(shop.phone || shop.name)}.</p>
-    <a class="btn ghost" style="margin-top:8px" href="/${shop.slug}">Back to ${esc(shop.name)}</a>
+    <p class="muted" style="font-size:.85rem;margin-top:16px">${t(lang, 'conf_email_note', { email: esc(b.customer_email), contact: esc(shop.phone || shop.name) })}</p>
+    <a class="btn ghost" style="margin-top:8px" href="/${shop.slug}">${t(lang, 'back_to', { shop: esc(shop.name) })}</a>
   </div>
   ${pending ? '<script>setTimeout(()=>location.reload(),4000)</script>' : ''}
-  `, { accent: shop.accent }))
+  `, { accent: shop.accent, lang }))
 })
 
 export default app

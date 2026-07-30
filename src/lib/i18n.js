@@ -1,0 +1,283 @@
+// Lightweight i18n for Alisa's customer-facing pages.
+// English is the source language; Thai is featured second (Thai massage is a
+// huge slice of the market). Add a language by appending to LANGS + DICT.
+
+import { getCookie, setCookie } from 'hono/cookie'
+
+// Display order in the switcher. English first, ไทย (Thai) second.
+export const LANGS = [
+  { code: 'en', label: 'English',    flag: '🇬🇧', locale: 'en-AU' },
+  { code: 'th', label: 'ไทย',        flag: '🇹🇭', locale: 'th-TH' },
+  { code: 'zh', label: '中文',        flag: '🇨🇳', locale: 'zh-CN' },
+  { code: 'vi', label: 'Tiếng Việt', flag: '🇻🇳', locale: 'vi-VN' },
+  { code: 'ko', label: '한국어',      flag: '🇰🇷', locale: 'ko-KR' },
+  { code: 'ja', label: '日本語',      flag: '🇯🇵', locale: 'ja-JP' },
+]
+
+const SUPPORTED = new Set(LANGS.map(l => l.code))
+export const localeFor = (lang) => (LANGS.find(l => l.code === lang) || LANGS[0]).locale
+
+const DICT = {
+  en: {
+    dashboard: 'Dashboard', login: 'Log in', signup: 'Start free',
+    powered_by: 'Powered by', footer_tagline: 'Online booking for massage shops',
+    hero_pill: 'For massage & bodywork shops',
+    hero_title_1: 'Let clients book you', hero_title_2: 'straight from Google.',
+    hero_sub: 'Your own booking page, deposits that stop no-shows, and a link you can drop into your Google Business Profile so customers book you from Maps.',
+    hero_cta: 'Create your booking page →', hero_demo: 'Try a live demo',
+    hero_note: 'Free to set up · No app to install · Live in 2 minutes',
+    demo_pill: 'Try it — no signup', demo_title: 'See a real booking page',
+    demo_sub: 'These are live example shops. Click through, pick a service and time, and make a test booking — exactly what your clients would do.',
+    demo_book_test: 'Book a test appointment →',
+    demo_owner_1: 'Want to see the owner side too? Log in with', demo_owner_2: 'to explore a live dashboard.',
+    feat1_t: 'Book anytime', feat1_d: 'Clients pick a service, a therapist and a time. You wake up to a full calendar — no phone tag.',
+    feat2_t: 'Deposits stop no-shows', feat2_d: 'Take a deposit at booking. If they cancel late, you keep it. If they show, it comes off the bill.',
+    feat3_t: 'Right from Google Maps', feat3_d: 'Add your Alisa link to your Google Business Profile. Customers tap “Book” on Maps and land on your page.',
+    feat4_t: 'Multiple therapists', feat4_d: 'Add your whole team, set each person’s hours, and let clients choose “anyone available”.',
+    feat5_t: 'Set your own hours', feat5_d: 'Per-therapist weekly schedules. Alisa only ever offers times you’re actually open.',
+    feat6_t: 'One shareable page', feat6_d: 'Put it in your Instagram bio, on flyers, in texts. Everything books through one clean link.',
+    cta_title: 'Ready to fill your table?', cta_sub: 'Set up your services and hours, then share your link. That’s it.', cta_btn: 'Start free →',
+    count_services: '{n} services', count_therapists: '{n} therapists', from_price: 'from {price}',
+    services: 'Services', no_services: 'No services listed yet.', about: 'About', our_therapists: 'Our therapists',
+    book: 'Book', min: 'min', book_online: 'Book online',
+    choose_service: 'Choose a service', select: 'Select',
+    step1: '1. Choose a therapist', anyone: 'Anyone available',
+    step2: '2. Pick a date', step3: '3. Pick a time', step4: '4. Your details',
+    full_name: 'Full name', email: 'Email', mobile: 'Mobile', optional: 'Optional',
+    notes_label: 'Anything we should know?', notes_ph: 'Injuries, pressure preference, parking…',
+    deposit_line: '💳 <strong>{deposit} deposit</strong> to confirm — the rest ({rest}) is paid in-store. Free cancellation up to {hours}h before.',
+    no_deposit_line: 'No deposit required — just confirm your spot.',
+    pick_time_btn: 'Pick a time to continue', loading: 'Loading…', choose_date_first: 'Choose a date first.',
+    no_availability: 'No availability right now.', fully_booked: 'Fully booked — try another day.',
+    confirm_pay: 'Confirm & pay deposit →', confirm_book: 'Confirm booking →',
+    almost_there: 'Almost there…', booked_in: 'You’re booked in!',
+    pending_sub: 'We’re confirming your deposit. This page will update shortly.', done_sub: 'See you soon at {shop}.',
+    c_service: 'Service', c_therapist: 'Therapist', c_when: 'When', c_price: 'Price', c_deposit_paid: 'Deposit paid', our_team: 'Our team',
+    conf_email_note: 'A confirmation was sent to {email}. Need to change it? Call {contact}.',
+    back_to: 'Back to {shop}', booking_confirmed: 'Booking confirmed',
+  },
+  th: {
+    dashboard: 'แดชบอร์ด', login: 'เข้าสู่ระบบ', signup: 'เริ่มใช้ฟรี',
+    powered_by: 'ขับเคลื่อนโดย', footer_tagline: 'ระบบจองออนไลน์สำหรับร้านนวด',
+    hero_pill: 'สำหรับร้านนวดและสปา',
+    hero_title_1: 'ให้ลูกค้าจองคุณ', hero_title_2: 'ได้ตรงจาก Google',
+    hero_sub: 'หน้าจองเป็นของคุณเอง มัดจำที่ช่วยลดการไม่มาตามนัด และลิงก์ที่ใส่ในโปรไฟล์ Google Business เพื่อให้ลูกค้าจองคุณจาก Maps ได้เลย',
+    hero_cta: 'สร้างหน้าจองของคุณ →', hero_demo: 'ลองใช้เดโมสด',
+    hero_note: 'ตั้งค่าฟรี · ไม่ต้องติดตั้งแอป · ใช้งานได้ใน 2 นาที',
+    demo_pill: 'ลองเลย — ไม่ต้องสมัคร', demo_title: 'ดูหน้าจองจริง',
+    demo_sub: 'เหล่านี้คือร้านตัวอย่างจริง คลิกเข้าไป เลือกบริการและเวลา แล้วลองจองดู — เหมือนที่ลูกค้าของคุณจะทำ',
+    demo_book_test: 'จองนัดทดลอง →',
+    demo_owner_1: 'อยากดูฝั่งเจ้าของร้านด้วยไหม? เข้าสู่ระบบด้วย', demo_owner_2: 'เพื่อสำรวจแดชบอร์ดจริง',
+    feat1_t: 'จองได้ทุกเวลา', feat1_d: 'ลูกค้าเลือกบริการ หมอนวด และเวลา คุณตื่นมาพร้อมตารางนัดเต็ม — ไม่ต้องโทรไปมา',
+    feat2_t: 'มัดจำช่วยลดการไม่มาตามนัด', feat2_d: 'เก็บมัดจำตอนจอง ถ้ายกเลิกช้าคุณเก็บไว้ได้ ถ้ามาตามนัดก็หักออกจากค่าบริการ',
+    feat3_t: 'ตรงจาก Google Maps', feat3_d: 'เพิ่มลิงก์ Alisa ในโปรไฟล์ Google Business ของคุณ ลูกค้าแตะ “จอง” บน Maps แล้วมาที่หน้าของคุณ',
+    feat4_t: 'หมอนวดหลายคน', feat4_d: 'เพิ่มทีมงานทั้งหมด ตั้งเวลาทำงานของแต่ละคน และให้ลูกค้าเลือก “ใครก็ได้ที่ว่าง”',
+    feat5_t: 'กำหนดเวลาทำการเอง', feat5_d: 'ตารางรายสัปดาห์ของหมอนวดแต่ละคน Alisa จะเสนอเฉพาะเวลาที่คุณเปิดจริงเท่านั้น',
+    feat6_t: 'หน้าเดียวแชร์ได้', feat6_d: 'ใส่ไว้ในไบโอ Instagram บนใบปลิว ในข้อความ ทุกการจองผ่านลิงก์เดียวที่สะอาดตา',
+    cta_title: 'พร้อมเติมเตียงให้เต็มหรือยัง?', cta_sub: 'ตั้งค่าบริการและเวลาทำการ แล้วแชร์ลิงก์ของคุณ แค่นั้นเอง', cta_btn: 'เริ่มใช้ฟรี →',
+    count_services: '{n} บริการ', count_therapists: 'หมอนวด {n} คน', from_price: 'เริ่มต้น {price}',
+    services: 'บริการ', no_services: 'ยังไม่มีบริการที่แสดง', about: 'เกี่ยวกับ', our_therapists: 'หมอนวดของเรา',
+    book: 'จอง', min: 'นาที', book_online: 'จองออนไลน์',
+    choose_service: 'เลือกบริการ', select: 'เลือก',
+    step1: '1. เลือกหมอนวด', anyone: 'ใครก็ได้ที่ว่าง',
+    step2: '2. เลือกวันที่', step3: '3. เลือกเวลา', step4: '4. ข้อมูลของคุณ',
+    full_name: 'ชื่อ-นามสกุล', email: 'อีเมล', mobile: 'มือถือ', optional: 'ไม่บังคับ',
+    notes_label: 'มีอะไรที่เราควรทราบไหม?', notes_ph: 'อาการบาดเจ็บ ความหนักที่ชอบ ที่จอดรถ…',
+    deposit_line: '💳 <strong>มัดจำ {deposit}</strong> เพื่อยืนยัน — ส่วนที่เหลือ ({rest}) ชำระที่ร้าน ยกเลิกฟรีได้ก่อนถึงนัด {hours} ชม.',
+    no_deposit_line: 'ไม่ต้องมัดจำ — แค่ยืนยันการจองของคุณ',
+    pick_time_btn: 'เลือกเวลาเพื่อดำเนินการต่อ', loading: 'กำลังโหลด…', choose_date_first: 'เลือกวันที่ก่อน',
+    no_availability: 'ขณะนี้ไม่มีเวลาว่าง', fully_booked: 'เต็มแล้ว — ลองวันอื่น',
+    confirm_pay: 'ยืนยันและชำระมัดจำ →', confirm_book: 'ยืนยันการจอง →',
+    almost_there: 'อีกนิดเดียว…', booked_in: 'จองสำเร็จแล้ว!',
+    pending_sub: 'เรากำลังยืนยันมัดจำของคุณ หน้านี้จะอัปเดตในไม่ช้า', done_sub: 'แล้วพบกันที่ {shop}',
+    c_service: 'บริการ', c_therapist: 'หมอนวด', c_when: 'เมื่อไหร่', c_price: 'ราคา', c_deposit_paid: 'มัดจำที่ชำระแล้ว', our_team: 'ทีมงานของเรา',
+    conf_email_note: 'ส่งการยืนยันไปที่ {email} แล้ว ต้องการเปลี่ยนแปลงใช่ไหม? โทร {contact}',
+    back_to: 'กลับไปที่ {shop}', booking_confirmed: 'ยืนยันการจองแล้ว',
+  },
+  zh: {
+    dashboard: '仪表板', login: '登录', signup: '免费开始',
+    powered_by: '技术支持', footer_tagline: '按摩店在线预约',
+    hero_pill: '适用于按摩与理疗店',
+    hero_title_1: '让客户直接从 Google', hero_title_2: '预约你。',
+    hero_sub: '专属预约页面、可减少爽约的定金，以及可放入 Google 商家资料的链接，让客户从地图直接预约你。',
+    hero_cta: '创建你的预约页面 →', hero_demo: '试用在线演示',
+    hero_note: '免费设置 · 无需安装应用 · 2 分钟上线',
+    demo_pill: '试试看 — 无需注册', demo_title: '查看真实预约页面',
+    demo_sub: '这些是真实的示例店铺。点击进入，选择服务和时间，做一次测试预约 — 完全就是你的客户的操作。',
+    demo_book_test: '预约测试时段 →',
+    demo_owner_1: '也想看看店主端？使用', demo_owner_2: '登录以体验真实仪表板。',
+    feat1_t: '随时预约', feat1_d: '客户选择服务、理疗师和时间。你一觉醒来就有满满的日程 — 无需来回打电话。',
+    feat2_t: '定金减少爽约', feat2_d: '预约时收取定金。若客户临时取消，定金归你；若到店，则从账单中抵扣。',
+    feat3_t: '直接来自 Google 地图', feat3_d: '将你的 Alisa 链接加入 Google 商家资料。客户在地图上点击“预约”即可进入你的页面。',
+    feat4_t: '多位理疗师', feat4_d: '添加整个团队，设置每人的工作时间，让客户选择“任何有空的人”。',
+    feat5_t: '自定义营业时间', feat5_d: '每位理疗师的每周排班。Alisa 只会显示你真正营业的时间。',
+    feat6_t: '一个可分享的页面', feat6_d: '放进 Instagram 简介、传单、短信里。所有预约都通过一个简洁的链接完成。',
+    cta_title: '准备好坐满你的按摩床了吗？', cta_sub: '设置好服务和营业时间，然后分享你的链接。就这么简单。', cta_btn: '免费开始 →',
+    count_services: '{n} 项服务', count_therapists: '{n} 位理疗师', from_price: '{price} 起',
+    services: '服务', no_services: '暂无服务。', about: '关于', our_therapists: '我们的理疗师',
+    book: '预约', min: '分钟', book_online: '在线预约',
+    choose_service: '选择服务', select: '选择',
+    step1: '1. 选择理疗师', anyone: '任何有空的人',
+    step2: '2. 选择日期', step3: '3. 选择时间', step4: '4. 你的信息',
+    full_name: '姓名', email: '电子邮箱', mobile: '手机', optional: '选填',
+    notes_label: '有什么需要我们知道的吗？', notes_ph: '伤病、力度偏好、停车…',
+    deposit_line: '💳 <strong>{deposit} 定金</strong>以确认 — 余款（{rest}）到店支付。可在预约前 {hours} 小时免费取消。',
+    no_deposit_line: '无需定金 — 直接确认你的预约。',
+    pick_time_btn: '选择时间以继续', loading: '加载中…', choose_date_first: '请先选择日期。',
+    no_availability: '目前没有可预约时间。', fully_booked: '已约满 — 试试其他日期。',
+    confirm_pay: '确认并支付定金 →', confirm_book: '确认预约 →',
+    almost_there: '就快好了…', booked_in: '预约成功！',
+    pending_sub: '我们正在确认你的定金，此页面稍后将更新。', done_sub: '期待在 {shop} 见到你。',
+    c_service: '服务', c_therapist: '理疗师', c_when: '时间', c_price: '价格', c_deposit_paid: '已付定金', our_team: '我们的团队',
+    conf_email_note: '确认信息已发送至 {email}。需要更改？请致电 {contact}。',
+    back_to: '返回 {shop}', booking_confirmed: '预约已确认',
+  },
+  vi: {
+    dashboard: 'Bảng điều khiển', login: 'Đăng nhập', signup: 'Bắt đầu miễn phí',
+    powered_by: 'Cung cấp bởi', footer_tagline: 'Đặt lịch trực tuyến cho tiệm massage',
+    hero_pill: 'Dành cho tiệm massage & trị liệu',
+    hero_title_1: 'Để khách đặt lịch với bạn', hero_title_2: 'ngay từ Google.',
+    hero_sub: 'Trang đặt lịch riêng của bạn, tiền cọc giúp giảm khách không đến, và một liên kết bạn có thể thêm vào Hồ sơ Google Business để khách đặt lịch ngay từ Maps.',
+    hero_cta: 'Tạo trang đặt lịch của bạn →', hero_demo: 'Dùng thử bản demo',
+    hero_note: 'Miễn phí thiết lập · Không cần cài ứng dụng · Sẵn sàng trong 2 phút',
+    demo_pill: 'Thử ngay — không cần đăng ký', demo_title: 'Xem một trang đặt lịch thật',
+    demo_sub: 'Đây là các tiệm ví dụ đang hoạt động. Nhấp vào, chọn dịch vụ và giờ, rồi đặt thử — đúng như khách của bạn sẽ làm.',
+    demo_book_test: 'Đặt lịch hẹn thử →',
+    demo_owner_1: 'Muốn xem cả phía chủ tiệm? Đăng nhập bằng', demo_owner_2: 'để khám phá bảng điều khiển thật.',
+    feat1_t: 'Đặt lịch mọi lúc', feat1_d: 'Khách chọn dịch vụ, kỹ thuật viên và giờ. Bạn thức dậy với lịch kín — không cần gọi điện qua lại.',
+    feat2_t: 'Tiền cọc giảm khách không đến', feat2_d: 'Thu cọc khi đặt lịch. Nếu khách hủy trễ, bạn giữ cọc. Nếu khách đến, cọc được trừ vào hóa đơn.',
+    feat3_t: 'Ngay từ Google Maps', feat3_d: 'Thêm liên kết Alisa vào Hồ sơ Google Business. Khách nhấn “Đặt lịch” trên Maps và vào trang của bạn.',
+    feat4_t: 'Nhiều kỹ thuật viên', feat4_d: 'Thêm cả đội ngũ, đặt giờ làm cho từng người, và để khách chọn “bất kỳ ai đang rảnh”.',
+    feat5_t: 'Tự đặt giờ làm việc', feat5_d: 'Lịch hàng tuần theo từng kỹ thuật viên. Alisa chỉ hiển thị giờ bạn thực sự mở cửa.',
+    feat6_t: 'Một trang để chia sẻ', feat6_d: 'Đặt vào bio Instagram, tờ rơi, tin nhắn. Mọi lượt đặt lịch qua một liên kết gọn gàng.',
+    cta_title: 'Sẵn sàng lấp đầy lịch chưa?', cta_sub: 'Thiết lập dịch vụ và giờ làm, rồi chia sẻ liên kết. Vậy là xong.', cta_btn: 'Bắt đầu miễn phí →',
+    count_services: '{n} dịch vụ', count_therapists: '{n} kỹ thuật viên', from_price: 'từ {price}',
+    services: 'Dịch vụ', no_services: 'Chưa có dịch vụ nào.', about: 'Giới thiệu', our_therapists: 'Kỹ thuật viên của chúng tôi',
+    book: 'Đặt lịch', min: 'phút', book_online: 'Đặt lịch trực tuyến',
+    choose_service: 'Chọn dịch vụ', select: 'Chọn',
+    step1: '1. Chọn kỹ thuật viên', anyone: 'Bất kỳ ai đang rảnh',
+    step2: '2. Chọn ngày', step3: '3. Chọn giờ', step4: '4. Thông tin của bạn',
+    full_name: 'Họ và tên', email: 'Email', mobile: 'Điện thoại', optional: 'Không bắt buộc',
+    notes_label: 'Điều gì chúng tôi nên biết?', notes_ph: 'Chấn thương, lực nhấn ưa thích, chỗ đậu xe…',
+    deposit_line: '💳 <strong>Đặt cọc {deposit}</strong> để xác nhận — phần còn lại ({rest}) thanh toán tại tiệm. Hủy miễn phí trước {hours} giờ.',
+    no_deposit_line: 'Không cần đặt cọc — chỉ cần xác nhận chỗ của bạn.',
+    pick_time_btn: 'Chọn giờ để tiếp tục', loading: 'Đang tải…', choose_date_first: 'Hãy chọn ngày trước.',
+    no_availability: 'Hiện chưa có lịch trống.', fully_booked: 'Đã kín lịch — thử ngày khác.',
+    confirm_pay: 'Xác nhận & trả cọc →', confirm_book: 'Xác nhận đặt lịch →',
+    almost_there: 'Sắp xong rồi…', booked_in: 'Đã đặt lịch xong!',
+    pending_sub: 'Chúng tôi đang xác nhận tiền cọc. Trang này sẽ cập nhật ngay.', done_sub: 'Hẹn gặp bạn tại {shop}.',
+    c_service: 'Dịch vụ', c_therapist: 'Kỹ thuật viên', c_when: 'Thời gian', c_price: 'Giá', c_deposit_paid: 'Đã trả cọc', our_team: 'Đội ngũ của chúng tôi',
+    conf_email_note: 'Xác nhận đã được gửi tới {email}. Cần thay đổi? Gọi {contact}.',
+    back_to: 'Quay lại {shop}', booking_confirmed: 'Đặt lịch đã xác nhận',
+  },
+  ko: {
+    dashboard: '대시보드', login: '로그인', signup: '무료로 시작',
+    powered_by: '제공', footer_tagline: '마사지샵 온라인 예약',
+    hero_pill: '마사지 & 바디워크샵을 위한 서비스',
+    hero_title_1: '고객이 Google에서 바로', hero_title_2: '예약하게 하세요.',
+    hero_sub: '나만의 예약 페이지, 노쇼를 줄이는 예약금, 그리고 Google 비즈니스 프로필에 넣어 고객이 지도에서 바로 예약할 수 있는 링크.',
+    hero_cta: '예약 페이지 만들기 →', hero_demo: '라이브 데모 보기',
+    hero_note: '무료 설정 · 앱 설치 불필요 · 2분이면 완료',
+    demo_pill: '체험하기 — 가입 불필요', demo_title: '실제 예약 페이지 보기',
+    demo_sub: '실제로 작동하는 예시 샵입니다. 클릭해서 서비스와 시간을 고르고 테스트 예약을 해보세요 — 고객이 하는 것과 똑같습니다.',
+    demo_book_test: '테스트 예약하기 →',
+    demo_owner_1: '사장님 화면도 보고 싶으세요? 다음으로 로그인하세요:', demo_owner_2: '실제 대시보드를 둘러보세요.',
+    feat1_t: '언제든 예약', feat1_d: '고객이 서비스, 관리사, 시간을 선택합니다. 아침에 일어나면 일정이 꽉 차 있죠 — 전화를 주고받을 필요 없이.',
+    feat2_t: '예약금으로 노쇼 방지', feat2_d: '예약 시 예약금을 받습니다. 늦게 취소하면 예약금은 사장님 몫, 방문하면 요금에서 차감됩니다.',
+    feat3_t: 'Google 지도에서 바로', feat3_d: 'Alisa 링크를 Google 비즈니스 프로필에 추가하세요. 고객이 지도에서 “예약”을 누르면 사장님 페이지로 옵니다.',
+    feat4_t: '여러 관리사', feat4_d: '팀 전체를 추가하고 각자의 근무 시간을 설정하며, 고객이 “예약 가능한 아무나”를 고를 수 있게 하세요.',
+    feat5_t: '영업 시간 직접 설정', feat5_d: '관리사별 주간 일정. Alisa는 실제로 영업하는 시간만 표시합니다.',
+    feat6_t: '공유 가능한 한 페이지', feat6_d: '인스타그램 바이오, 전단지, 문자에 넣으세요. 모든 예약이 하나의 깔끔한 링크로 이루어집니다.',
+    cta_title: '예약을 가득 채울 준비 되셨나요?', cta_sub: '서비스와 영업 시간을 설정하고 링크를 공유하세요. 그게 전부입니다.', cta_btn: '무료로 시작 →',
+    count_services: '서비스 {n}개', count_therapists: '관리사 {n}명', from_price: '{price}부터',
+    services: '서비스', no_services: '아직 등록된 서비스가 없습니다.', about: '소개', our_therapists: '우리 관리사',
+    book: '예약', min: '분', book_online: '온라인 예약',
+    choose_service: '서비스 선택', select: '선택',
+    step1: '1. 관리사 선택', anyone: '예약 가능한 아무나',
+    step2: '2. 날짜 선택', step3: '3. 시간 선택', step4: '4. 정보 입력',
+    full_name: '이름', email: '이메일', mobile: '휴대폰', optional: '선택 사항',
+    notes_label: '저희가 알아야 할 사항이 있나요?', notes_ph: '부상, 선호하는 압력, 주차…',
+    deposit_line: '💳 확인을 위한 <strong>예약금 {deposit}</strong> — 나머지({rest})는 매장에서 결제합니다. {hours}시간 전까지 무료 취소.',
+    no_deposit_line: '예약금 불필요 — 예약만 확정하세요.',
+    pick_time_btn: '계속하려면 시간을 선택하세요', loading: '불러오는 중…', choose_date_first: '먼저 날짜를 선택하세요.',
+    no_availability: '지금은 예약 가능한 시간이 없습니다.', fully_booked: '예약 마감 — 다른 날을 선택하세요.',
+    confirm_pay: '확인 후 예약금 결제 →', confirm_book: '예약 확정 →',
+    almost_there: '거의 다 됐어요…', booked_in: '예약 완료!',
+    pending_sub: '예약금을 확인하고 있습니다. 이 페이지는 곧 업데이트됩니다.', done_sub: '{shop}에서 곧 뵙겠습니다.',
+    c_service: '서비스', c_therapist: '관리사', c_when: '시간', c_price: '가격', c_deposit_paid: '결제된 예약금', our_team: '우리 팀',
+    conf_email_note: '확인 내용을 {email}(으)로 보냈습니다. 변경이 필요하세요? {contact}(으)로 전화하세요.',
+    back_to: '{shop}(으)로 돌아가기', booking_confirmed: '예약 확정',
+  },
+  ja: {
+    dashboard: 'ダッシュボード', login: 'ログイン', signup: '無料で始める',
+    powered_by: '提供', footer_tagline: 'マッサージ店のオンライン予約',
+    hero_pill: 'マッサージ・ボディワーク店向け',
+    hero_title_1: 'お客様が Google から', hero_title_2: '直接予約。',
+    hero_sub: '自分専用の予約ページ、無断キャンセルを防ぐ手付金、そして Google ビジネスプロフィールに載せてお客様がマップから予約できるリンク。',
+    hero_cta: '予約ページを作成 →', hero_demo: 'ライブデモを試す',
+    hero_note: '設定無料 · アプリ不要 · 2分で公開',
+    demo_pill: '試してみる — 登録不要', demo_title: '本物の予約ページを見る',
+    demo_sub: 'これらは実際に動く例のお店です。クリックしてサービスと時間を選び、テスト予約してみてください — お客様が行うのとまったく同じです。',
+    demo_book_test: 'テスト予約する →',
+    demo_owner_1: 'オーナー側も見たいですか？次でログイン：', demo_owner_2: '実際のダッシュボードをご覧ください。',
+    feat1_t: 'いつでも予約', feat1_d: 'お客様がサービス・セラピスト・時間を選びます。朝起きればスケジュールが埋まっています — 電話のやり取りは不要。',
+    feat2_t: '手付金で無断キャンセル防止', feat2_d: '予約時に手付金を受け取ります。直前キャンセルなら手付金はお店のもの、来店すれば料金から差し引かれます。',
+    feat3_t: 'Google マップから直接', feat3_d: 'Alisa のリンクを Google ビジネスプロフィールに追加。お客様がマップで「予約」をタップするとあなたのページへ。',
+    feat4_t: '複数のセラピスト', feat4_d: 'チーム全員を追加し、各自の勤務時間を設定。お客様は「空いている人なら誰でも」を選べます。',
+    feat5_t: '営業時間を自由に設定', feat5_d: 'セラピストごとの週間スケジュール。Alisa は実際に営業している時間だけを表示します。',
+    feat6_t: '共有できる1ページ', feat6_d: 'Instagram のプロフィール、チラシ、メッセージに。すべての予約が1つのすっきりしたリンクから。',
+    cta_title: '予約でいっぱいにする準備はできましたか？', cta_sub: 'サービスと営業時間を設定し、リンクを共有するだけ。それだけです。', cta_btn: '無料で始める →',
+    count_services: 'サービス {n} 件', count_therapists: 'セラピスト {n} 名', from_price: '{price}〜',
+    services: 'サービス', no_services: 'まだサービスがありません。', about: '紹介', our_therapists: 'セラピスト紹介',
+    book: '予約', min: '分', book_online: 'オンライン予約',
+    choose_service: 'サービスを選ぶ', select: '選択',
+    step1: '1. セラピストを選ぶ', anyone: '空いている人なら誰でも',
+    step2: '2. 日付を選ぶ', step3: '3. 時間を選ぶ', step4: '4. お客様情報',
+    full_name: '氏名', email: 'メール', mobile: '携帯電話', optional: '任意',
+    notes_label: '何か伝えておくことはありますか？', notes_ph: 'ケガ、希望する強さ、駐車場…',
+    deposit_line: '💳 確認のための<strong>手付金 {deposit}</strong> — 残り（{rest}）は店頭でお支払い。{hours}時間前まで無料キャンセル。',
+    no_deposit_line: '手付金不要 — 予約を確定するだけ。',
+    pick_time_btn: '続けるには時間を選んでください', loading: '読み込み中…', choose_date_first: '先に日付を選んでください。',
+    no_availability: '現在空きがありません。', fully_booked: '満席です — 別の日をお試しください。',
+    confirm_pay: '確認して手付金を支払う →', confirm_book: '予約を確定 →',
+    almost_there: 'あと少し…', booked_in: '予約完了！',
+    pending_sub: '手付金を確認しています。このページはまもなく更新されます。', done_sub: '{shop}でお待ちしております。',
+    c_service: 'サービス', c_therapist: 'セラピスト', c_when: '日時', c_price: '料金', c_deposit_paid: '支払済み手付金', our_team: '私たちのチーム',
+    conf_email_note: '確認を {email} に送信しました。変更が必要ですか？{contact} にお電話ください。',
+    back_to: '{shop}に戻る', booking_confirmed: '予約確定',
+  },
+}
+
+// Translate `key` for `lang`, falling back to English then the raw key.
+// Interpolates {placeholder} tokens from `vars`.
+export function t(lang, key, vars) {
+  const table = DICT[lang] || DICT.en
+  let s = table[key] ?? DICT.en[key] ?? key
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, v)
+  return s
+}
+
+// Resolve the active language: ?lang= (also persisted to a cookie) →
+// existing cookie → Accept-Language → English.
+export function resolveLang(c) {
+  const q = c.req.query('lang')
+  if (q && SUPPORTED.has(q)) {
+    setCookie(c, 'lang', q, { path: '/', maxAge: 86400 * 365, sameSite: 'Lax' })
+    return q
+  }
+  const cookie = getCookie(c, 'lang')
+  if (cookie && SUPPORTED.has(cookie)) return cookie
+  const header = c.req.header('accept-language') || ''
+  for (const part of header.split(',')) {
+    const code = part.trim().split(';')[0].split('-')[0].toLowerCase()
+    if (SUPPORTED.has(code)) return code
+  }
+  return 'en'
+}
+
+// Compact <select> language switcher for the nav.
+export function langSwitcher(cur) {
+  return `<select class="langsel" aria-label="Language" onchange="var u=new URL(location);u.searchParams.set('lang',this.value);location=u.toString()">
+    ${LANGS.map(l => `<option value="${l.code}"${l.code === cur ? ' selected' : ''}>${l.flag} ${l.label}</option>`).join('')}
+  </select>`
+}

@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { getSession } from './lib/auth.js'
+import { resolveLang } from './lib/i18n.js'
 import authRoutes from './routes/auth.js'
 import dashboardRoutes from './routes/dashboard.js'
 import apiRoutes from './routes/api.js'
@@ -24,6 +25,13 @@ app.use('*', async (c, next) => {
     url.hostname = 'alisa.bored.investments'
     return c.redirect(url.toString(), 301)
   }
+  await next()
+})
+
+// Resolve the visitor's language (?lang= → cookie → Accept-Language → English)
+// and stash it on the context for every view to read.
+app.use('*', async (c, next) => {
+  c.set('lang', resolveLang(c))
   await next()
 })
 

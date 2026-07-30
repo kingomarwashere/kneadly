@@ -1,5 +1,7 @@
 // Shared layout + design system for Alisa
 
+import { t, langSwitcher } from './i18n.js'
+
 export const money = (cents, currency = 'aud') =>
   new Intl.NumberFormat('en-AU', { style: 'currency', currency: currency.toUpperCase() }).format((cents || 0) / 100)
 
@@ -44,6 +46,7 @@ label{display:block;font-size:.85rem;font-weight:600;margin:0 0 6px;color:var(--
 .nav{display:flex;align-items:center;justify-content:space-between;padding:18px 0}
 .brand{font-family:'Fraunces',serif;font-weight:600;font-size:1.4rem;color:var(--ink);display:flex;align-items:center;gap:8px}
 .brand:hover{text-decoration:none}
+.langsel{width:auto;padding:7px 10px;font-size:.85rem;border-radius:999px;background:#fff;color:var(--ink);border:1px solid var(--line);cursor:pointer}
 .notice{padding:12px 16px;border-radius:12px;margin-bottom:16px;font-size:.9rem}
 .notice.err{background:#fbeae5;color:var(--danger)}
 .notice.ok{background:#e4f3ea;color:var(--ok)}
@@ -61,7 +64,8 @@ const FONTS = `<link rel="preconnect" href="https://fonts.googleapis.com"><link 
 export function layout(title, body, opts = {}) {
   const desc = opts.description || 'Online booking for massage & bodywork. Fill your calendar, take deposits, and let clients book from Google in seconds.'
   const accent = opts.accent
-  return `<!DOCTYPE html><html lang="en"><head>
+  const lang = opts.lang || 'en'
+  return `<!DOCTYPE html><html lang="${lang}"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(desc)}">
@@ -73,17 +77,18 @@ ${FONTS}
 ${opts.jsonld ? `<script type="application/ld+json">${JSON.stringify(opts.jsonld)}</script>` : ''}
 <style>${BASE_CSS}${accent ? `:root{--accent:${accent};--accent-ink:${accent}}` : ''}${opts.css || ''}</style>
 </head><body>${body}
-<footer><div class="wrap">Powered by <a href="/">Alisa</a> · Online booking for massage shops</div></footer>
+<footer><div class="wrap">${t(lang, 'powered_by')} <a href="/">Alisa</a> · ${t(lang, 'footer_tagline')}</div></footer>
 </body></html>`
 }
 
-export function siteNav(user) {
+export function siteNav(user, lang = 'en') {
   return `<div class="wrap"><nav class="nav">
     <a class="brand" href="/">💆 Alisa</a>
-    <div class="row" style="flex:0">
+    <div class="row" style="flex:0;align-items:center">
+      ${langSwitcher(lang)}
       ${user
-        ? `<a class="btn ghost sm" href="/dashboard">Dashboard</a>`
-        : `<a class="btn ghost sm" href="/login">Log in</a><a class="btn sm" href="/signup">Start free</a>`}
+        ? `<a class="btn ghost sm" href="/dashboard">${t(lang, 'dashboard')}</a>`
+        : `<a class="btn ghost sm" href="/login">${t(lang, 'login')}</a><a class="btn sm" href="/signup">${t(lang, 'signup')}</a>`}
     </div>
   </nav></div>`
 }

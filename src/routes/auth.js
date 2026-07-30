@@ -9,13 +9,13 @@ const slugify = (s) => s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replac
 
 const RESERVED = new Set(['login', 'signup', 'logout', 'dashboard', 'api', 'webhooks', 'favicon.svg', 'og.svg', 'robots.txt', 'sitemap.xml', 'book', 'admin', 'about', 'pricing'])
 
-function authPage(title, body, err) {
-  return layout(title, `${siteNav(null)}<div class="wrap narrow" style="padding:40px 20px">
+function authPage(title, body, err, lang = 'en') {
+  return layout(title, `${siteNav(null, lang)}<div class="wrap narrow" style="padding:40px 20px">
     <div class="card" style="padding:34px">
       ${err ? `<div class="notice err">${esc(err)}</div>` : ''}
       ${body}
     </div>
-  </div>`)
+  </div>`, { lang })
 }
 
 app.get('/signup', (c) => {
@@ -31,7 +31,7 @@ app.get('/signup', (c) => {
       <button class="btn" style="width:100%">Create my booking page</button>
     </form>
     <p class="muted" style="text-align:center;margin-top:16px">Already have an account? <a href="/login">Log in</a></p>
-  `))
+  `, undefined, c.get('lang')))
 })
 
 app.post('/signup', async (c) => {
@@ -43,10 +43,10 @@ app.post('/signup', async (c) => {
   const password = (form.password || '').toString()
 
   if (!shopName || !name || !email || password.length < 8)
-    return c.html(authPage('Sign up', signupForm(form), 'Please fill in every field (password 8+ chars).'), 400)
+    return c.html(authPage('Sign up', signupForm(form), 'Please fill in every field (password 8+ chars).', c.get('lang')), 400)
 
   const existing = await db.prepare('SELECT id FROM users WHERE email = ?').bind(email).first()
-  if (existing) return c.html(authPage('Sign up', signupForm(form), 'That email is already registered. Try logging in.'), 400)
+  if (existing) return c.html(authPage('Sign up', signupForm(form), 'That email is already registered. Try logging in.', c.get('lang')), 400)
 
   // Unique slug from shop name
   let base = slugify(shopName) || 'shop'
@@ -94,7 +94,7 @@ app.get('/login', (c) => {
       <button class="btn" style="width:100%">Log in</button>
     </form>
     <p class="muted" style="text-align:center;margin-top:16px">New here? <a href="/signup">Create your shop</a></p>
-  `))
+  `, undefined, c.get('lang')))
 })
 
 app.post('/login', async (c) => {
@@ -109,7 +109,7 @@ app.post('/login', async (c) => {
         <div class="field"><label>Email</label><input type="email" name="email" value="${esc(email)}" required></div>
         <div class="field"><label>Password</label><input type="password" name="password" required></div>
         <button class="btn" style="width:100%">Log in</button>
-      </form>`, 'Incorrect email or password.'), 401)
+      </form>`, 'Incorrect email or password.', c.get('lang')), 401)
 
   const sessionId = await createSession(db, user.id)
   setCookie(c, 'alisa_session', sessionId, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 86400 * 30, path: '/' })
