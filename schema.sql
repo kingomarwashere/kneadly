@@ -1,4 +1,4 @@
--- Kneadly — booking platform for massage shops
+-- Alisa — booking platform for massage shops
 -- Multi-tenant: one owner account owns one shop (schema allows more later).
 
 CREATE TABLE IF NOT EXISTS users (

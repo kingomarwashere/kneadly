@@ -20,7 +20,7 @@ function authPage(title, body, err) {
 
 app.get('/signup', (c) => {
   if (c.get('user')) return c.redirect('/dashboard')
-  return c.html(authPage('Start your massage shop — Kneadly', `
+  return c.html(authPage('Start your massage shop — Alisa', `
     <h2>Start taking bookings</h2>
     <p class="muted">Free to set up. You'll have a booking page in about two minutes.</p>
     <form method="post" action="/signup">
@@ -69,7 +69,7 @@ app.post('/signup', async (c) => {
       .bind(genId(), staffId, dow, '09:00', '18:00').run()
 
   const sessionId = await createSession(db, userId)
-  setCookie(c, 'kneadly_session', sessionId, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 86400 * 30, path: '/' })
+  setCookie(c, 'alisa_session', sessionId, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 86400 * 30, path: '/' })
   return c.redirect('/dashboard?welcome=1')
 })
 
@@ -86,7 +86,7 @@ function signupForm(form = {}) {
 
 app.get('/login', (c) => {
   if (c.get('user')) return c.redirect('/dashboard')
-  return c.html(authPage('Log in — Kneadly', `
+  return c.html(authPage('Log in — Alisa', `
     <h2>Welcome back</h2>
     <form method="post" action="/login">
       <div class="field"><label>Email</label><input type="email" name="email" required></div>
@@ -112,14 +112,14 @@ app.post('/login', async (c) => {
       </form>`, 'Incorrect email or password.'), 401)
 
   const sessionId = await createSession(db, user.id)
-  setCookie(c, 'kneadly_session', sessionId, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 86400 * 30, path: '/' })
+  setCookie(c, 'alisa_session', sessionId, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 86400 * 30, path: '/' })
   return c.redirect('/dashboard')
 })
 
 app.get('/logout', async (c) => {
-  const sid = c.req.header('cookie')?.match(/kneadly_session=([^;]+)/)?.[1]
+  const sid = c.req.header('cookie')?.match(/alisa_session=([^;]+)/)?.[1]
   if (sid) await deleteSession(c.env.DB, sid)
-  deleteCookie(c, 'kneadly_session', { path: '/' })
+  deleteCookie(c, 'alisa_session', { path: '/' })
   return c.redirect('/')
 })
 

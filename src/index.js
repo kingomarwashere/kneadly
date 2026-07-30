@@ -9,17 +9,19 @@ import publicRoutes from './routes/public.js'
 
 const app = new Hono()
 
-// Canonical-domain redirect: Kneadly moved from theradicalparty.com to
-// bored.investments (neutral SaaS, off the political brand). Keep the old host
-// alive so existing links — including Google Maps booking links — 301 across.
+// Canonical-domain redirect: the app rebranded from Kneadly to Alisa. Both old
+// Kneadly hosts (theradicalparty.com and bored.investments) stay alive so
+// existing links — including Google Maps booking links — 301 across to the new
+// canonical Alisa domain.
+const OLD_HOSTS = new Set(['kneadly.theradicalparty.com', 'kneadly.bored.investments'])
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url)
   // Skip machine endpoints: Stripe webhooks + API callers don't follow 301s,
-  // and both hosts hit the same Worker + D1, so those keep working on either
+  // and every host hits the same Worker + D1, so those keep working on any
   // domain until integrations are repointed.
   const machine = url.pathname.startsWith('/webhooks') || url.pathname.startsWith('/api')
-  if (url.hostname === 'kneadly.theradicalparty.com' && !machine) {
-    url.hostname = 'kneadly.bored.investments'
+  if (OLD_HOSTS.has(url.hostname) && !machine) {
+    url.hostname = 'alisa.bored.investments'
     return c.redirect(url.toString(), 301)
   }
   await next()
@@ -27,7 +29,7 @@ app.use('*', async (c, next) => {
 
 // Attach logged-in owner (if any) to the request context
 app.use('*', async (c, next) => {
-  const sessionId = getCookie(c, 'kneadly_session')
+  const sessionId = getCookie(c, 'alisa_session')
   if (sessionId) {
     const user = await getSession(c.env.DB, sessionId)
     if (user) c.set('user', user)
@@ -45,7 +47,7 @@ app.get('/og.svg', (c) => {
   <rect width="1200" height="630" fill="#0f766e"/>
   <rect width="1200" height="630" fill="url(#g)"/>
   <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#0b5750"/></linearGradient></defs>
-  <text x="90" y="250" font-family="Georgia,serif" font-weight="600" font-size="120" fill="#faf8f5">💆 Kneadly</text>
+  <text x="90" y="250" font-family="Georgia,serif" font-weight="600" font-size="120" fill="#faf8f5">💆 Alisa</text>
   <text x="96" y="330" font-family="Georgia,serif" font-size="42" fill="#c99b5b">Online booking for massage shops</text>
   <text x="96" y="405" font-family="monospace" font-size="24" fill="#a7d3ce">Take bookings from Google Maps · Collect deposits · Fill your calendar</text>
   <rect x="96" y="470" width="360" height="70" rx="35" fill="#c99b5b"/>
@@ -55,12 +57,12 @@ app.get('/og.svg', (c) => {
 })
 
 app.get('/robots.txt', (c) => {
-  const base = c.env.BASE_URL || 'https://kneadly.bored.investments'
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
   return c.text(`User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /api\nDisallow: /webhooks\nSitemap: ${base}/sitemap.xml`)
 })
 
 app.get('/sitemap.xml', async (c) => {
-  const base = c.env.BASE_URL || 'https://kneadly.bored.investments'
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
   const rows = await c.env.DB.prepare(
     `SELECT slug FROM shops WHERE is_published = 1 ORDER BY created_at DESC`).all()
   const urls = [`<url><loc>${base}/</loc><priority>1.0</priority></url>`]
@@ -70,7 +72,7 @@ app.get('/sitemap.xml', async (c) => {
     200, { 'Content-Type': 'application/xml', 'Cache-Control': 'public, max-age=3600' })
 })
 
-app.get('/healthz', (c) => c.json({ ok: true, app: 'kneadly' }))
+app.get('/healthz', (c) => c.json({ ok: true, app: 'alisa' }))
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 app.route('/api', apiRoutes)

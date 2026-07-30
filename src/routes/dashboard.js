@@ -20,10 +20,10 @@ app.use('*', async (c, next) => {
 function shell(c, active, title, body, notice) {
   const shop = c.get('shop')
   const tab = (id, label) => `<a href="/dashboard${id ? '/' + id : ''}" class="dtab${active === id ? ' on' : ''}">${label}</a>`
-  return c.html(layout(`${title} — Kneadly`, `
+  return c.html(layout(`${title} — Alisa`, `
   <div class="dwrap">
     <aside class="dside">
-      <a class="brand" href="/dashboard" style="padding:6px 10px 14px">💆 Kneadly</a>
+      <a class="brand" href="/dashboard" style="padding:6px 10px 14px">💆 Alisa</a>
       ${tab('', '📊 Overview')}
       ${tab('bookings', '🗓️ Bookings')}
       ${tab('services', '💆 Services')}
@@ -60,7 +60,7 @@ const upcomingWhere = `status IN ('confirmed','pending_payment') AND start_time 
 // ─── Overview ────────────────────────────────────────────────────────────────
 app.get('/', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
-  const base = c.env.BASE_URL || 'https://kneadly.bored.investments'
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
   const link = `${base}/${shop.slug}`
   const welcome = c.req.query('welcome')
 

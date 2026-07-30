@@ -46,10 +46,10 @@ app.get('/', async (c) => {
         </div>
       </a>`).join('')}
     </div>
-    <p class="muted" style="text-align:center;font-size:.82rem;margin-top:16px">Want to see the owner side too? Log in with <strong>demo@kneadly.co</strong> / <strong>massage2026</strong> to explore a live dashboard.</p>
+    <p class="muted" style="text-align:center;font-size:.82rem;margin-top:16px">Want to see the owner side too? Log in with <strong>demo@alisa.co</strong> / <strong>massage2026</strong> to explore a live dashboard.</p>
   </div>` : ''
 
-  return c.html(layout('Kneadly — Online booking for massage shops', `
+  return c.html(layout('Alisa — Online booking for massage shops', `
   ${siteNav(user)}
   <div class="wrap" style="text-align:center;padding:60px 20px 40px">
     <span class="pill">For massage &amp; bodywork shops</span>
@@ -71,9 +71,9 @@ app.get('/', async (c) => {
     ${[
       ['🗓️', 'Book anytime', 'Clients pick a service, a therapist and a time. You wake up to a full calendar — no phone tag.'],
       ['💳', 'Deposits stop no-shows', 'Take a deposit at booking. If they cancel late, you keep it. If they show, it comes off the bill.'],
-      ['📍', 'Right from Google Maps', 'Add your Kneadly link to your Google Business Profile. Customers tap “Book” on Maps and land on your page.'],
+      ['📍', 'Right from Google Maps', 'Add your Alisa link to your Google Business Profile. Customers tap “Book” on Maps and land on your page.'],
       ['🧖', 'Multiple therapists', 'Add your whole team, set each person’s hours, and let clients choose “anyone available”.'],
-      ['⏱️', 'Set your own hours', 'Per-therapist weekly schedules. Kneadly only ever offers times you’re actually open.'],
+      ['⏱️', 'Set your own hours', 'Per-therapist weekly schedules. Alisa only ever offers times you’re actually open.'],
       ['🔗', 'One shareable page', 'Put it in your Instagram bio, on flyers, in texts. Everything books through one clean link.'],
     ].map(([e, t, d]) => `<div class="card" style="padding:24px"><div style="font-size:2rem">${e}</div>
       <h3 style="margin:.5em 0 .2em;font-size:1.15rem">${t}</h3><p class="muted" style="margin:0">${d}</p></div>`).join('')}
@@ -89,7 +89,7 @@ app.get('/', async (c) => {
   `, {
     jsonld: {
       '@context': 'https://schema.org', '@type': 'SoftwareApplication',
-      name: 'Kneadly', applicationCategory: 'BusinessApplication',
+      name: 'Alisa', applicationCategory: 'BusinessApplication',
       description: 'Online booking software for massage and bodywork businesses.',
       offers: { '@type': 'Offer', price: '0', priceCurrency: 'AUD' }
     }
@@ -107,7 +107,7 @@ app.get('/:slug', async (c) => {
   const staff = (await db.prepare(
     'SELECT * FROM staff WHERE shop_id = ? AND is_active = 1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
 
-  const base = c.env.BASE_URL || 'https://kneadly.bored.investments'
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
   const addr = [shop.address, shop.suburb, shop.state, shop.postcode].filter(Boolean).join(', ')
 
   const jsonld = {
@@ -310,7 +310,7 @@ app.post('/:slug/book', async (c) => {
 
   // Payment required → Stripe Checkout
   if (status === 'pending_payment') {
-    const base = c.env.BASE_URL || 'https://kneadly.bored.investments'
+    const base = c.env.BASE_URL || 'https://alisa.bored.investments'
     try {
       const session = await stripeClient(c.env.STRIPE_SECRET_KEY).createCheckoutSession({
         mode: 'payment',

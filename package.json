@@ -1,13 +1,13 @@
 {
-  "name": "kneadly",
+  "name": "alisa",
   "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate": "wrangler d1 execute kneadly --remote --file=schema.sql",
-    "db:migrate:local": "wrangler d1 execute kneadly --local --file=schema.sql",
-    "db:seed": "wrangler d1 execute kneadly --remote --file=seed.sql"
+    "db:migrate": "wrangler d1 execute alisa --remote --file=schema.sql",
+    "db:migrate:local": "wrangler d1 execute alisa --local --file=schema.sql",
+    "db:seed": "wrangler d1 execute alisa --remote --file=seed.sql"
   },
   "dependencies": {
     "hono": "^4.6.0"

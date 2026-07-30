@@ -1,4 +1,4 @@
-// Shared layout + design system for Kneadly
+// Shared layout + design system for Alisa
 
 export const money = (cents, currency = 'aud') =>
   new Intl.NumberFormat('en-AU', { style: 'currency', currency: currency.toUpperCase() }).format((cents || 0) / 100)
@@ -73,13 +73,13 @@ ${FONTS}
 ${opts.jsonld ? `<script type="application/ld+json">${JSON.stringify(opts.jsonld)}</script>` : ''}
 <style>${BASE_CSS}${accent ? `:root{--accent:${accent};--accent-ink:${accent}}` : ''}${opts.css || ''}</style>
 </head><body>${body}
-<footer><div class="wrap">Powered by <a href="/">Kneadly</a> · Online booking for massage shops</div></footer>
+<footer><div class="wrap">Powered by <a href="/">Alisa</a> · Online booking for massage shops</div></footer>
 </body></html>`
 }
 
 export function siteNav(user) {
   return `<div class="wrap"><nav class="nav">
-    <a class="brand" href="/">💆 Kneadly</a>
+    <a class="brand" href="/">💆 Alisa</a>
     <div class="row" style="flex:0">
       ${user
         ? `<a class="btn ghost sm" href="/dashboard">Dashboard</a>`

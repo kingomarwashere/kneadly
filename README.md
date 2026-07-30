@@ -1,10 +1,10 @@
-# 💆 Kneadly
+# 💆 Alisa
 
 Online booking for massage & bodywork shops — a lightweight Fresha alternative.
 Each shop gets a public booking page they can drop straight into their **Google
 Business Profile** so customers book them from Google Maps.
 
-Live: https://kneadly.theradicalparty.com
+Live: https://alisa.bored.investments
 
 ## What it does
 
@@ -70,7 +70,7 @@ npx wrangler secret put STRIPE_WEBHOOK_SECRET
 ```
 
 Then add a webhook endpoint in Stripe pointing at
-`https://kneadly.theradicalparty.com/webhooks/stripe` for the
+`https://alisa.bored.investments/webhooks/stripe` for the
 `checkout.session.completed` and `checkout.session.expired` events.
 
 > Deposits currently settle to the platform Stripe account. Per-shop payouts via
