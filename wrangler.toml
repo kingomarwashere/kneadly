@@ -26,3 +26,6 @@ custom_domain = true
 
 [vars]
 BASE_URL = "https://alisa.bored.investments"
+# Sender for transactional emails (Resend). bored.investments is a verified
+# Resend domain; RESEND_API_KEY is a Worker secret (wrangler secret put).
+EMAIL_FROM = "Alisa <bookings@bored.investments>"

@@ -74,6 +74,8 @@ const DICT = {
     pro_manage: 'Manage schedule', pro_logout: 'Log out',
     pro_bad_login: 'Incorrect email or password.', pro_email_taken: 'That email already has an account — try logging in.',
     pro_fill: 'Please fill in every field (password 8+ characters).',
+    email_subject: 'Booking confirmed — {shop}', email_hi: 'Hi {name},', email_details: 'Booking details',
+    email_questions: 'Questions or need to reschedule? Call {contact}.', email_view_booking: 'View your booking',
   },
   th: {
     dashboard: 'แดชบอร์ด', login: 'เข้าสู่ระบบ', signup: 'เริ่มใช้ฟรี',
@@ -130,6 +132,8 @@ const DICT = {
     pro_manage: 'จัดการตาราง', pro_logout: 'ออกจากระบบ',
     pro_bad_login: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง', pro_email_taken: 'อีเมลนี้มีบัญชีอยู่แล้ว — ลองเข้าสู่ระบบ',
     pro_fill: 'กรุณากรอกทุกช่อง (รหัสผ่าน 8 ตัวอักษรขึ้นไป)',
+    email_subject: 'ยืนยันการจองแล้ว — {shop}', email_hi: 'สวัสดีคุณ {name},', email_details: 'รายละเอียดการจอง',
+    email_questions: 'มีคำถามหรือต้องการเลื่อนนัด? โทร {contact}', email_view_booking: 'ดูการจองของคุณ',
   },
   zh: {
     dashboard: '仪表板', login: '登录', signup: '免费开始',
@@ -186,6 +190,8 @@ const DICT = {
     pro_manage: '管理排班', pro_logout: '退出登录',
     pro_bad_login: '邮箱或密码不正确。', pro_email_taken: '该邮箱已注册账号——请尝试登录。',
     pro_fill: '请填写每一项（密码至少 8 位）。',
+    email_subject: '预约已确认 — {shop}', email_hi: '你好 {name}，', email_details: '预约详情',
+    email_questions: '有疑问或需要改期？请致电 {contact}。', email_view_booking: '查看你的预约',
   },
   vi: {
     dashboard: 'Bảng điều khiển', login: 'Đăng nhập', signup: 'Bắt đầu miễn phí',
@@ -242,6 +248,8 @@ const DICT = {
     pro_manage: 'Quản lý lịch', pro_logout: 'Đăng xuất',
     pro_bad_login: 'Email hoặc mật khẩu không đúng.', pro_email_taken: 'Email này đã có tài khoản — hãy thử đăng nhập.',
     pro_fill: 'Vui lòng điền mọi trường (mật khẩu từ 8 ký tự).',
+    email_subject: 'Đặt lịch đã xác nhận — {shop}', email_hi: 'Chào {name},', email_details: 'Chi tiết đặt lịch',
+    email_questions: 'Có câu hỏi hoặc cần đổi lịch? Gọi {contact}.', email_view_booking: 'Xem lịch hẹn của bạn',
   },
   ko: {
     dashboard: '대시보드', login: '로그인', signup: '무료로 시작',
@@ -298,6 +306,8 @@ const DICT = {
     pro_manage: '스케줄 관리', pro_logout: '로그아웃',
     pro_bad_login: '이메일 또는 비밀번호가 올바르지 않습니다.', pro_email_taken: '이미 계정이 있는 이메일입니다 — 로그인해 보세요.',
     pro_fill: '모든 항목을 입력하세요 (비밀번호 8자 이상).',
+    email_subject: '예약 확정 — {shop}', email_hi: '{name}님, 안녕하세요.', email_details: '예약 상세',
+    email_questions: '문의 또는 일정 변경이 필요하세요? {contact}(으)로 전화하세요.', email_view_booking: '내 예약 보기',
   },
   ja: {
     dashboard: 'ダッシュボード', login: 'ログイン', signup: '無料で始める',
@@ -354,6 +364,8 @@ const DICT = {
     pro_manage: 'スケジュール管理', pro_logout: 'ログアウト',
     pro_bad_login: 'メールまたはパスワードが正しくありません。', pro_email_taken: 'このメールにはすでにアカウントがあります — ログインしてください。',
     pro_fill: 'すべての項目を入力してください（パスワードは8文字以上）。',
+    email_subject: '予約確定 — {shop}', email_hi: '{name} 様、', email_details: 'ご予約の詳細',
+    email_questions: 'ご質問・日程変更は {contact} までお電話ください。', email_view_booking: 'ご予約を確認する',
   },
 }
 

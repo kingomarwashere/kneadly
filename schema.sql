@@ -147,6 +147,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   service_name TEXT,
   staff_name TEXT,
   notes TEXT,
+  lang TEXT,                      -- customer's language at booking time (for localized emails)
   stripe_session_id TEXT,
   stripe_payment_intent_id TEXT,
   stripe_charge_id TEXT,

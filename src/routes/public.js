@@ -5,6 +5,7 @@ import { getShopBySlug, eligibleStaff, slotsForDate } from '../lib/booking.js'
 import { formatBookingTime, formatDate } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
 import { genId } from '../lib/auth.js'
+import { sendBookingEmails } from '../lib/email.js'
 
 const app = new Hono()
 
@@ -317,10 +318,10 @@ app.post('/:slug/book', async (c) => {
 
   await db.prepare(`INSERT INTO bookings
     (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
-     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(bookingId, shop.id, service.id, staffId, name, email, (form.phone || '').toString(),
-      startUnix, endUnix, status, service.price_cents, depositCents, service.name, staffRow?.name || '', (form.notes || '').toString()).run()
+      startUnix, endUnix, status, service.price_cents, depositCents, service.name, staffRow?.name || '', (form.notes || '').toString(), c.get('lang') || 'en').run()
 
   // Payment required → Stripe Checkout
   if (status === 'pending_payment') {
@@ -350,6 +351,12 @@ app.post('/:slug/book', async (c) => {
       await db.prepare("UPDATE bookings SET status = 'confirmed' WHERE id = ?").bind(bookingId).run()
     }
   }
+
+  // Email the customer (localized) + owner for confirmed bookings. Deposit
+  // bookings that went to Stripe are emailed from the webhook instead; this
+  // helper no-ops unless the booking is already confirmed. Never blocks/fails.
+  const emailP = sendBookingEmails(c.env, bookingId)
+  if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(emailP); else await emailP
 
   return c.redirect(`/${shop.slug}/booked/${bookingId}`)
 })

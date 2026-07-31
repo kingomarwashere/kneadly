@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { stripeClient } from '../lib/stripe.js'
+import { sendBookingEmails } from '../lib/email.js'
 
 const app = new Hono()
 
@@ -34,6 +35,10 @@ app.post('/stripe', async (c) => {
     await db.prepare(
       "UPDATE bookings SET status = 'confirmed', stripe_session_id = ?, stripe_payment_intent_id = ?, stripe_charge_id = ? WHERE id = ?"
     ).bind(session.id, session.payment_intent, chargeId, bookingId).run()
+
+    // Deposit paid → now email the customer (localized) + owner. Non-blocking.
+    const emailP = sendBookingEmails(c.env, bookingId)
+    if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(emailP); else await emailP
   }
 
   if (event.type === 'checkout.session.expired') {
