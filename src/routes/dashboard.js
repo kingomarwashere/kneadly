@@ -1,11 +1,18 @@
 import { Hono } from 'hono'
 import { layout, money, esc } from '../lib/views.js'
 import { genId } from '../lib/auth.js'
-import { formatBookingTime } from '../lib/slots.js'
+import { formatBookingTime, dateTzString, localToUtcMs } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+// Short date label like "Mon 3 Aug" from a YYYY-MM-DD string
+const niceOff = (ds) => new Date(ds + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' })
+// Just the time, e.g. "2:30 PM", in a timezone
+const timeOnly = (unix, tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date(unix * 1000))
+// Add whole days to a YYYY-MM-DD (anchored at noon UTC so DST can't shift the date)
+const addDays = (ds, n) => new Date(new Date(ds + 'T12:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10)
 
 // Guard + load the owner's shop for every dashboard route
 app.use('*', async (c, next) => {
@@ -25,6 +32,7 @@ function shell(c, active, title, body, notice) {
     <aside class="dside">
       <a class="brand" href="/dashboard" style="padding:6px 10px 14px">💆 Alisa</a>
       ${tab('', '📊 Overview')}
+      ${tab('roster', '📅 Roster')}
       ${tab('bookings', '🗓️ Bookings')}
       ${tab('services', '💆 Services')}
       ${tab('staff', '🧑‍⚕️ Therapists')}
@@ -114,6 +122,100 @@ app.get('/', async (c) => {
       <tr><th>When</th><th>Service</th><th>Client</th><th>Therapist</th><th></th></tr>
       ${upcoming.map(b => `<tr><td>${formatBookingTime(b.start_time, shop.timezone)}</td><td>${esc(b.service_name)}</td><td>${esc(b.customer_name)}</td><td>${esc(b.staff_name || '')}</td><td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td></tr>`).join('')}
     </table></div>` : '<p class="muted">No upcoming bookings yet — share your link to get started.</p>'}
+  `)
+})
+
+// ─── Roster (week calendar) ──────────────────────────────────────────────────
+app.get('/roster', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), tz = shop.timezone
+
+  // Work out the Monday of the week being viewed.
+  const today = dateTzString(new Date(), tz)
+  const dowToday = new Date(today + 'T12:00:00Z').getUTCDay()      // 0=Sun..6=Sat
+  const thisMonday = addDays(today, dowToday === 0 ? -6 : 1 - dowToday)
+  const reqWeek = c.req.query('week')
+  const weekStart = /^\d{4}-\d{2}-\d{2}$/.test(reqWeek || '') ? reqWeek : thisMonday
+  const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
+
+  // Pull the whole week in a few queries, then group in JS.
+  const weekStartUnix = Math.floor(localToUtcMs(days[0], '00:00', tz) / 1000)
+  const weekEndUnix = Math.floor(localToUtcMs(addDays(days[6], 1), '00:00', tz) / 1000)
+  const bookings = (await db.prepare(
+    `SELECT * FROM bookings WHERE shop_id = ? AND start_time >= ? AND start_time < ? AND status != 'cancelled' ORDER BY start_time`
+  ).bind(shop.id, weekStartUnix, weekEndUnix).all()).results || []
+
+  const avail = (await db.prepare(
+    `SELECT s.id, s.name, s.emoji, a.day_of_week, a.start_time, a.end_time
+     FROM staff s JOIN availability a ON a.staff_id = s.id
+     WHERE s.shop_id = ? AND s.is_active = 1`).bind(shop.id).all()).results || []
+
+  const offs = (await db.prepare(
+    `SELECT t.staff_id, t.date, s.name, s.emoji FROM time_off t JOIN staff s ON s.id = t.staff_id
+     WHERE s.shop_id = ? AND t.date >= ? AND t.date <= ?`).bind(shop.id, days[0], days[6]).all()).results || []
+
+  // Group helpers
+  const availByDow = {}
+  for (const a of avail) (availByDow[a.day_of_week] ||= []).push(a)
+  const offByDate = {}
+  for (const o of offs) (offByDate[o.date] ||= []).push(o)
+  const bookByDate = {}
+  for (const b of bookings) (bookByDate[dateTzString(new Date(b.start_time * 1000), tz)] ||= []).push(b)
+
+  const cols = days.map(ds => {
+    const dow = new Date(ds + 'T12:00:00Z').getUTCDay()
+    const offIds = new Set((offByDate[ds] || []).map(o => o.staff_id))
+    const working = (availByDow[dow] || []).filter(a => !offIds.has(a.id)).sort((a, b) => a.start_time.localeCompare(b.start_time))
+    const offList = offByDate[ds] || []
+    const dayBk = bookByDate[ds] || []
+    const dnum = new Date(ds + 'T12:00:00Z').getUTCDate()
+
+    const workHtml = working.map(w =>
+      `<div class="wchip"><span>${esc(w.emoji)}</span> ${esc(w.name.split(' ')[0])} <span class="whrs">${w.start_time}–${w.end_time}</span></div>`).join('')
+      + offList.map(o => `<div class="wchip off">🌴 ${esc(o.name.split(' ')[0])}</div>`).join('')
+    const bkHtml = dayBk.map(b =>
+      `<div class="bk ${b.status}"><strong>${timeOnly(b.start_time, tz)}</strong> ${esc(b.service_name || '')}
+        <div class="bkmeta">${esc(b.customer_name)} · ${esc(b.staff_name || '')}</div></div>`).join('')
+
+    return `<div class="rcol${ds === today ? ' today' : ''}">
+      <div class="rhead">${DOW[dow]} <span>${dnum}</span></div>
+      <div class="rwork">${workHtml || '<div class="rnone">Closed</div>'}</div>
+      <div class="rbook">${bkHtml || '<div class="rnone">No bookings</div>'}</div>
+    </div>`
+  }).join('')
+
+  const label = `${niceOff(days[0])} – ${niceOff(days[6])}`
+  const nav = `<div class="inline" style="gap:8px">
+    <a class="btn ghost sm" href="/dashboard/roster?week=${addDays(weekStart, -7)}">← Prev</a>
+    <a class="btn ghost sm" href="/dashboard/roster">This week</a>
+    <a class="btn ghost sm" href="/dashboard/roster?week=${addDays(weekStart, 7)}">Next →</a>
+  </div>`
+
+  return shell(c, 'roster', 'Roster', `
+    <style>
+    .rgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;overflow-x:auto;padding-bottom:6px}
+    .rcol{border:1px solid var(--line);border-radius:12px;min-width:150px;background:#fff;display:flex;flex-direction:column;overflow:hidden}
+    .rcol.today{border-color:var(--accent);box-shadow:0 0 0 2px rgba(15,118,110,.14)}
+    .rhead{padding:8px 10px;border-bottom:1px solid var(--line);font-weight:600;font-size:.82rem;display:flex;justify-content:space-between;align-items:baseline;color:var(--muted)}
+    .rcol.today .rhead{color:var(--accent-ink)}
+    .rhead span{font-family:'Fraunces',serif;font-size:1.15rem;color:var(--ink)}
+    .rwork{padding:8px 10px;border-bottom:1px dashed var(--line);display:flex;flex-direction:column;gap:4px;background:#fcfbf9}
+    .wchip{font-size:.76rem;background:#eef4f3;border-radius:8px;padding:3px 8px;color:var(--accent-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .wchip.off{background:#faf1e6;color:#8a6414}
+    .whrs{color:var(--muted)}
+    .rbook{padding:8px 10px;display:flex;flex-direction:column;gap:6px;flex:1;min-height:60px}
+    .bk{font-size:.77rem;border-radius:8px;padding:5px 8px;border-left:3px solid var(--accent);background:#f5f8f8;line-height:1.3}
+    .bk.pending_payment{border-left-color:#c9a227;background:#fdf7e8}
+    .bk.completed{border-left-color:#2f8a5b;background:#eef6f0}
+    .bk.no_show{border-left-color:#c0492f;background:#fbeae5;opacity:.75}
+    .bkmeta{color:var(--muted);font-size:.7rem}
+    .rnone{color:var(--muted);font-size:.74rem;padding:2px 0}
+    </style>
+    <div class="inline" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div><h2 style="margin:0">Roster</h2><div class="muted">${label} · ${bookings.length} booking${bookings.length === 1 ? '' : 's'}</div></div>
+      ${nav}
+    </div>
+    <p class="muted" style="font-size:.82rem;margin:10px 0 14px">Green blocks are confirmed bookings, amber are awaiting deposit. 🌴 marks a therapist’s day off. Therapists set their own hours &amp; days off from their <a href="/dashboard/staff">private link</a>.</p>
+    <div class="rgrid">${cols}</div>
   `)
 })
 
@@ -228,18 +330,34 @@ app.post('/services/:id/delete', async (c) => {
 // ─── Staff + hours ───────────────────────────────────────────────────────────
 app.get('/staff', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
+  const today = dateTzString(new Date(), shop.timezone)
   const staff = (await db.prepare('SELECT * FROM staff WHERE shop_id = ? ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
   const hoursFor = async (id) => (await db.prepare('SELECT * FROM availability WHERE staff_id = ? ORDER BY day_of_week').bind(id).all()).results || []
+  const offFor = async (id) => (await db.prepare('SELECT * FROM time_off WHERE staff_id = ? AND date >= ? ORDER BY date').bind(id, today).all()).results || []
 
   const cards = []
   for (const st of staff) {
     const hours = await hoursFor(st.id)
     const hByDow = Object.fromEntries(hours.map(h => [h.day_of_week, h]))
+    const off = await offFor(st.id)
+    const link = `${base}/t/${st.token}`
     cards.push(`<div class="card" style="padding:20px;margin-bottom:16px">
       <div class="inline" style="justify-content:space-between">
         <div><span style="font-size:1.4rem">${esc(st.emoji)}</span> <strong>${esc(st.name)}</strong> <span class="muted">${esc(st.title || '')}</span></div>
         <form method="post" action="/dashboard/staff/${st.id}/delete" onsubmit="return confirm('Remove this therapist?')"><button class="btn danger sm">Remove</button></form>
       </div>
+
+      <div class="card" style="padding:12px 14px;background:#f6f2ec;border-style:dashed;margin-top:14px">
+        <label style="margin-bottom:4px">🔗 ${esc(st.name.split(' ')[0])}’s private scheduling link</label>
+        <div class="inline">
+          <input value="${esc(link)}" readonly style="max-width:360px" id="tl_${st.id}">
+          <button class="btn ghost sm" type="button" onclick="navigator.clipboard.writeText(document.getElementById('tl_${st.id}').value);this.textContent='Copied ✓'">Copy</button>
+          <a class="btn ghost sm" href="${esc(link)}" target="_blank">Open</a>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:8px 0 0">Send this so they can set their own hours &amp; days off. ${off.length ? `🌴 Days off: <strong>${off.map(o => esc(niceOff(o.date))).join(', ')}</strong>` : 'No days off booked.'}</p>
+      </div>
+
       <form method="post" action="/dashboard/staff/${st.id}/hours" style="margin-top:14px">
         <label>Weekly hours</label>
         <table style="margin-bottom:12px"><tr><th></th><th>Open</th><th>Start</th><th>End</th></tr>
@@ -257,6 +375,7 @@ app.get('/staff', async (c) => {
 
   return shell(c, 'staff', 'Therapists', `
     <h2>Therapists</h2>
+    <p class="muted" style="margin-top:-6px">Set hours here, or send each therapist their private link so they manage their own hours &amp; days off.</p>
     ${cards.join('') || '<p class="muted">No therapists yet.</p>'}
     <div class="card" style="padding:22px">
       <h3 style="margin-top:0">Add a therapist</h3>
@@ -276,9 +395,9 @@ app.post('/staff', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
   const f = await c.req.parseBody()
   const id = genId()
-  await db.prepare('INSERT INTO staff (id, shop_id, name, title, emoji, sort_order) VALUES (?, ?, ?, ?, ?, ?)')
+  await db.prepare('INSERT INTO staff (id, shop_id, name, title, emoji, token, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .bind(id, shop.id, (f.name || '').toString().trim(), (f.title || 'Massage Therapist').toString().trim(),
-      (f.emoji || '🧑‍⚕️').toString().trim() || '🧑‍⚕️', Math.floor(Date.now() / 1000)).run()
+      (f.emoji || '🧑‍⚕️').toString().trim() || '🧑‍⚕️', genId() + genId(), Math.floor(Date.now() / 1000)).run()
   // Default Mon–Sat 9–6 so they can be booked right away
   for (let dow = 1; dow <= 6; dow++)
     await db.prepare('INSERT INTO availability (id, staff_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?)')

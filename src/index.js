@@ -6,6 +6,7 @@ import authRoutes from './routes/auth.js'
 import dashboardRoutes from './routes/dashboard.js'
 import apiRoutes from './routes/api.js'
 import webhookRoutes from './routes/webhooks.js'
+import therapistRoutes from './routes/therapist.js'
 import publicRoutes from './routes/public.js'
 
 const app = new Hono()
@@ -87,6 +88,7 @@ app.route('/api', apiRoutes)
 app.route('/webhooks', webhookRoutes)
 app.route('/', authRoutes)
 app.route('/dashboard', dashboardRoutes)
+app.route('/t', therapistRoutes)   // therapist self-service (secret token links)
 app.route('/', publicRoutes)   // shop pages + booking flow live at the root, keep last
 
 export default app

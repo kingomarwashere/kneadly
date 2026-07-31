@@ -34,6 +34,10 @@ export async function slotsForDate(db, shop, service, staffId, dateStr) {
     const avail = await db.prepare(
       'SELECT * FROM availability WHERE staff_id = ? AND day_of_week = ?').bind(st.id, dow).first()
     if (!avail) continue
+    // Skip therapists who've marked this date as a day off
+    const off = await db.prepare(
+      'SELECT 1 FROM time_off WHERE staff_id = ? AND date = ?').bind(st.id, dateStr).first()
+    if (off) continue
     const booked = await db.prepare(
       `SELECT start_time, end_time FROM bookings
        WHERE staff_id = ? AND status IN ('pending_payment','confirmed','completed')
@@ -48,15 +52,21 @@ export async function slotsForDate(db, shop, service, staffId, dateStr) {
 }
 
 // Dates within the next `daysAhead` that have at least one open slot pattern.
+// A date qualifies only if some eligible therapist works that weekday AND has
+// not marked that specific date as a day off.
 export async function availableDates(db, shop, service, staffId, daysAhead = 45) {
   let staff = await eligibleStaff(db, shop.id, service.id)
   if (staffId && staffId !== 'any') staff = staff.filter(s => s.id === staffId)
   if (!staff.length) return []
-  const days = new Set()
+
+  // Preload each therapist's working weekdays + booked-off dates once.
+  const info = []
   for (const st of staff) {
-    const rows = await db.prepare('SELECT day_of_week FROM availability WHERE staff_id = ?').bind(st.id).all()
-    for (const r of (rows.results || [])) days.add(r.day_of_week)
+    const dows = new Set(((await db.prepare('SELECT day_of_week FROM availability WHERE staff_id = ?').bind(st.id).all()).results || []).map(r => r.day_of_week))
+    const off = new Set(((await db.prepare('SELECT date FROM time_off WHERE staff_id = ?').bind(st.id).all()).results || []).map(r => r.date))
+    info.push({ dows, off })
   }
+
   const out = []
   const now = new Date()
   const todayStr = dateTzString(now, shop.timezone)
@@ -64,7 +74,8 @@ export async function availableDates(db, shop, service, staffId, daysAhead = 45)
     const d = new Date(now.getTime() + i * 86400000)
     const ds = dateTzString(d, shop.timezone)
     if (ds < todayStr) continue
-    if (days.has(getDayOfWeek(ds, shop.timezone))) out.push(ds)
+    const dow = getDayOfWeek(ds, shop.timezone)
+    if (info.some(x => x.dows.has(dow) && !x.off.has(ds))) out.push(ds)
   }
   return out
 }

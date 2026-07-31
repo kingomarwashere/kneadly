@@ -67,12 +67,14 @@ CREATE TABLE IF NOT EXISTS staff (
   title TEXT DEFAULT 'Massage Therapist',
   bio TEXT,
   emoji TEXT NOT NULL DEFAULT '🧑‍⚕️',
+  token TEXT,                     -- secret self-service link so the therapist can set their own hours
   is_active INTEGER NOT NULL DEFAULT 1,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_staff_shop ON staff(shop_id, is_active);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_token ON staff(token);
 
 -- Which staff can perform which services (absence of rows for a service = all staff)
 CREATE TABLE IF NOT EXISTS staff_services (
@@ -93,6 +95,18 @@ CREATE TABLE IF NOT EXISTS availability (
   UNIQUE(staff_id, day_of_week),
   FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
 );
+
+-- Days a therapist is off (holidays, sick days) — blocks that whole date
+CREATE TABLE IF NOT EXISTS time_off (
+  id TEXT PRIMARY KEY,
+  staff_id TEXT NOT NULL,
+  date TEXT NOT NULL,             -- 'YYYY-MM-DD' in the shop timezone
+  reason TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(staff_id, date),
+  FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_time_off_staff ON time_off(staff_id, date);
 
 -- Customer appointments
 CREATE TABLE IF NOT EXISTS bookings (

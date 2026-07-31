@@ -7,7 +7,7 @@ const app = new Hono()
 
 const slugify = (s) => s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
 
-const RESERVED = new Set(['login', 'signup', 'logout', 'dashboard', 'api', 'webhooks', 'favicon.svg', 'og.svg', 'robots.txt', 'sitemap.xml', 'book', 'admin', 'about', 'pricing'])
+const RESERVED = new Set(['login', 'signup', 'logout', 'dashboard', 'api', 'webhooks', 't', 'favicon.svg', 'og.svg', 'robots.txt', 'sitemap.xml', 'book', 'admin', 'about', 'pricing'])
 
 function authPage(title, body, err, lang = 'en') {
   return layout(title, `${siteNav(null, lang)}<div class="wrap narrow" style="padding:40px 20px">
@@ -62,8 +62,8 @@ app.post('/signup', async (c) => {
 
   // Seed a default therapist with sensible Mon–Sat hours so the shop can take bookings immediately
   const staffId = genId()
-  await db.prepare(`INSERT INTO staff (id, shop_id, name, title) VALUES (?, ?, ?, ?)`)
-    .bind(staffId, shopId, name, 'Massage Therapist').run()
+  await db.prepare(`INSERT INTO staff (id, shop_id, name, title, token) VALUES (?, ?, ?, ?, ?)`)
+    .bind(staffId, shopId, name, 'Massage Therapist', genId() + genId()).run()
   for (let dow = 1; dow <= 6; dow++)
     await db.prepare(`INSERT INTO availability (id, staff_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?)`)
       .bind(genId(), staffId, dow, '09:00', '18:00').run()
