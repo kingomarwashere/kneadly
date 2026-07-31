@@ -7,7 +7,7 @@ const app = new Hono()
 
 const slugify = (s) => s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
 
-const RESERVED = new Set(['login', 'signup', 'logout', 'dashboard', 'api', 'webhooks', 't', 'favicon.svg', 'og.svg', 'robots.txt', 'sitemap.xml', 'book', 'admin', 'about', 'pricing'])
+const RESERVED = new Set(['login', 'signup', 'logout', 'dashboard', 'api', 'webhooks', 't', 'pro', 'favicon.svg', 'og.svg', 'robots.txt', 'sitemap.xml', 'book', 'admin', 'about', 'pricing'])
 
 function authPage(title, body, err, lang = 'en') {
   return layout(title, `${siteNav(null, lang)}<div class="wrap narrow" style="padding:40px 20px">

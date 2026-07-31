@@ -36,3 +36,30 @@ export async function getSession(db, sessionId) {
 export async function deleteSession(db, sessionId) {
   await db.prepare('DELETE FROM sessions WHERE id = ?').bind(sessionId).run()
 }
+
+// ─── Therapist login accounts (separate identity from shop owners) ───────────
+export async function createTherapistSession(db, therapistId) {
+  const id = genId()
+  const expires = Math.floor(Date.now() / 1000) + 86400 * 30
+  await db.prepare('INSERT INTO therapist_sessions (id, therapist_id, expires_at) VALUES (?, ?, ?)').bind(id, therapistId, expires).run()
+  return id
+}
+
+export async function getTherapistSession(db, sessionId) {
+  if (!sessionId) return null
+  return db.prepare(
+    'SELECT t.id, t.email, t.name FROM therapist_sessions s JOIN therapists t ON t.id = s.therapist_id WHERE s.id = ? AND s.expires_at > ?'
+  ).bind(sessionId, Math.floor(Date.now() / 1000)).first()
+}
+
+export async function deleteTherapistSession(db, sessionId) {
+  await db.prepare('DELETE FROM therapist_sessions WHERE id = ?').bind(sessionId).run()
+}
+
+// Link every staff row that carries this email (and isn't already claimed) to
+// the therapist account — this is how one login spans multiple shops.
+export async function claimStaffByEmail(db, therapistId, email) {
+  await db.prepare(
+    'UPDATE staff SET therapist_id = ? WHERE lower(email) = lower(?) AND (therapist_id IS NULL OR therapist_id = ?)'
+  ).bind(therapistId, email, therapistId).run()
+}

@@ -59,7 +59,25 @@ CREATE TABLE IF NOT EXISTS services (
 );
 CREATE INDEX IF NOT EXISTS idx_services_shop ON services(shop_id, is_active);
 
--- Therapists / massage staff
+-- Therapist login accounts. One account can be linked to many shops' staff
+-- rows (a therapist who works at several shops uses ONE login for all of them).
+CREATE TABLE IF NOT EXISTS therapists (
+  id TEXT PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE TABLE IF NOT EXISTS therapist_sessions (
+  id TEXT PRIMARY KEY,
+  therapist_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (therapist_id) REFERENCES therapists(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_therapist_sessions ON therapist_sessions(therapist_id);
+
+-- Therapists / massage staff (one row per shop the therapist works at)
 CREATE TABLE IF NOT EXISTS staff (
   id TEXT PRIMARY KEY,
   shop_id TEXT NOT NULL,
@@ -68,6 +86,8 @@ CREATE TABLE IF NOT EXISTS staff (
   bio TEXT,
   emoji TEXT NOT NULL DEFAULT '🧑‍⚕️',
   token TEXT,                     -- secret self-service link so the therapist can set their own hours
+  therapist_id TEXT,              -- linked therapist login account (nullable)
+  email TEXT,                     -- used to auto-link this row to a therapist account
   is_active INTEGER NOT NULL DEFAULT 1,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -75,6 +95,8 @@ CREATE TABLE IF NOT EXISTS staff (
 );
 CREATE INDEX IF NOT EXISTS idx_staff_shop ON staff(shop_id, is_active);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_token ON staff(token);
+CREATE INDEX IF NOT EXISTS idx_staff_therapist ON staff(therapist_id);
+CREATE INDEX IF NOT EXISTS idx_staff_email ON staff(email);
 
 -- Which staff can perform which services (absence of rows for a service = all staff)
 CREATE TABLE IF NOT EXISTS staff_services (

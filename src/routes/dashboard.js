@@ -356,6 +356,16 @@ app.get('/staff', async (c) => {
           <a class="btn ghost sm" href="${esc(link)}" target="_blank">Open</a>
         </div>
         <p class="muted" style="font-size:.78rem;margin:8px 0 0">Send this so they can set their own hours &amp; days off. ${off.length ? `🌴 Days off: <strong>${off.map(o => esc(niceOff(o.date))).join(', ')}</strong>` : 'No days off booked.'}</p>
+        <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
+          <label style="margin-bottom:4px">✉️ Login email ${st.therapist_id ? '<span class="tag completed">account linked</span>' : (st.email ? '<span class="tag pending_payment">invited</span>' : '')}</label>
+          <form method="post" action="/dashboard/staff/${st.id}/email" class="inline">
+            <input type="email" name="email" value="${esc(st.email || '')}" placeholder="therapist@email.com" style="max-width:280px">
+            <button class="btn ghost sm">Save</button>
+          </form>
+          <p class="muted" style="font-size:.76rem;margin:6px 0 0">${st.therapist_id
+            ? 'They log in at <a href="/pro" target="_blank">/pro</a> and manage this shop from their own account (works across every shop they’re at).'
+            : 'Set their email so they can create a login at <a href="/pro" target="_blank">/pro</a> and manage hours across all their shops.'}</p>
+        </div>
       </div>
 
       <form method="post" action="/dashboard/staff/${st.id}/hours" style="margin-top:14px">
@@ -385,6 +395,7 @@ app.get('/staff', async (c) => {
           <div class="field"><label>Title</label><input name="title" value="Massage Therapist"></div>
           <div class="field" style="flex:0 0 90px"><label>Emoji</label><input name="emoji" value="🧑‍⚕️" maxlength="4"></div>
         </div>
+        <div class="field"><label>Email <span class="muted">(lets them log in at /pro to manage their own hours — great if they also work elsewhere)</span></label><input type="email" name="email" placeholder="jordan@email.com"></div>
         <button class="btn">Add therapist</button>
       </form>
     </div>
@@ -395,9 +406,16 @@ app.post('/staff', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
   const f = await c.req.parseBody()
   const id = genId()
-  await db.prepare('INSERT INTO staff (id, shop_id, name, title, emoji, token, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  const email = (f.email || '').toString().trim().toLowerCase()
+  await db.prepare('INSERT INTO staff (id, shop_id, name, title, emoji, token, email, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
     .bind(id, shop.id, (f.name || '').toString().trim(), (f.title || 'Massage Therapist').toString().trim(),
-      (f.emoji || '🧑‍⚕️').toString().trim() || '🧑‍⚕️', genId() + genId(), Math.floor(Date.now() / 1000)).run()
+      (f.emoji || '🧑‍⚕️').toString().trim() || '🧑‍⚕️', genId() + genId(), email || null, Math.floor(Date.now() / 1000)).run()
+  // If a therapist login already exists for this email, link it now so they
+  // instantly see this shop under their account.
+  if (email) {
+    const th = await db.prepare('SELECT id FROM therapists WHERE email = ?').bind(email).first()
+    if (th) await db.prepare('UPDATE staff SET therapist_id = ? WHERE id = ?').bind(th.id, id).run()
+  }
   // Default Mon–Sat 9–6 so they can be booked right away
   for (let dow = 1; dow <= 6; dow++)
     await db.prepare('INSERT INTO availability (id, staff_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?)')
@@ -407,6 +425,18 @@ app.post('/staff', async (c) => {
 
 app.post('/staff/:id/delete', async (c) => {
   await c.env.DB.prepare('DELETE FROM staff WHERE id = ? AND shop_id = ?').bind(c.req.param('id'), c.get('shop').id).run()
+  return c.redirect('/dashboard/staff')
+})
+
+app.post('/staff/:id/email', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
+  const st = await db.prepare('SELECT id FROM staff WHERE id = ? AND shop_id = ?').bind(id, shop.id).first()
+  if (!st) return c.redirect('/dashboard/staff')
+  const email = ((await c.req.parseBody()).email || '').toString().trim().toLowerCase()
+  // Re-link to a matching therapist account if one exists (else leave unlinked
+  // until the therapist signs up with this email).
+  const th = email ? await db.prepare('SELECT id FROM therapists WHERE email = ?').bind(email).first() : null
+  await db.prepare('UPDATE staff SET email = ?, therapist_id = ? WHERE id = ?').bind(email || null, th?.id || null, id).run()
   return c.redirect('/dashboard/staff')
 })
 
