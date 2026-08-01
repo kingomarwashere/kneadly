@@ -120,6 +120,17 @@ CREATE TABLE IF NOT EXISTS availability (
   FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
 );
 
+-- Cache of Workers-AI translations of owner content (service names/descriptions,
+-- tagline, about) into each customer language. Keyed by (lang, hash of source).
+CREATE TABLE IF NOT EXISTS translations (
+  lang TEXT NOT NULL,
+  src_hash TEXT NOT NULL,
+  src TEXT,
+  translated TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (lang, src_hash)
+);
+
 -- Reviews left by clients. Kept internally; high ratings are offered a Google
 -- review handoff (shops.google_review_url).
 CREATE TABLE IF NOT EXISTS reviews (

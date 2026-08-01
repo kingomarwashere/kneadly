@@ -7,6 +7,7 @@ import { stripeClient } from '../lib/stripe.js'
 import { genId } from '../lib/auth.js'
 import { sendBookingEmails } from '../lib/email.js'
 import { findOrCreateClient } from '../lib/clients.js'
+import { translate, translateAll } from '../lib/translate.js'
 
 const app = new Hono()
 
@@ -112,6 +113,13 @@ app.get('/:slug', async (c) => {
   const staff = (await db.prepare(
     'SELECT * FROM staff WHERE shop_id = ? AND is_active = 1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
 
+  // Auto-translate owner content into the customer's language (cached).
+  await Promise.all([
+    ...services.map(async s => { s.name = await translate(c.env, s.name, lang); s.description = await translate(c.env, s.description, lang) }),
+    ...staff.map(async st => { st.title = await translate(c.env, st.title, lang) }),
+    (async () => { shop.tagline = await translate(c.env, shop.tagline, lang); shop.about = await translate(c.env, shop.about, lang) })(),
+  ])
+
   const base = c.env.BASE_URL || 'https://alisa.bored.investments'
   const addr = [shop.address, shop.suburb, shop.state, shop.postcode].filter(Boolean).join(', ')
 
@@ -191,6 +199,7 @@ app.get('/:slug/book', async (c) => {
   // No service chosen → show the picker
   if (!service) {
     const services = (await db.prepare('SELECT * FROM services WHERE shop_id = ? AND is_active = 1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+    await Promise.all(services.map(async s => { s.name = await translate(c.env, s.name, lang) }))
     return c.html(layout(`${t(lang, 'book')} — ${shop.name}`, `${siteNav(c.get('user'), lang)}<div class="wrap narrow" style="padding:30px 20px">
       <a href="/${shop.slug}" class="muted">← ${esc(shop.name)}</a><h2 style="margin-top:10px">${t(lang, 'choose_service')}</h2>
       ${services.map(s => `<a class="card svc" style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;text-decoration:none;color:inherit" href="/${shop.slug}/book?service=${s.id}">
@@ -200,6 +209,8 @@ app.get('/:slug/book', async (c) => {
 
   const staff = await eligibleStaff(db, shop.id, service.id)
   const depositCents = Math.round(service.price_cents * shop.deposit_pct / 100)
+  // Translate the chosen service's name + description for display.
+  ;[service.name, service.description] = await translateAll(c.env, [service.name, service.description], lang)
 
   const T = {
     loading: t(lang, 'loading'),
@@ -377,6 +388,8 @@ app.get('/:slug/booked/:id', async (c) => {
   if (!shop) return c.notFound()
   const b = await db.prepare('SELECT * FROM bookings WHERE id = ? AND shop_id = ?').bind(c.req.param('id'), shop.id).first()
   if (!b) return c.notFound()
+
+  b.service_name = await translate(c.env, b.service_name, lang)
 
   // Returning from Stripe before the webhook lands? Confirm optimistically.
   const paid = b.status === 'confirmed' || b.status === 'completed'

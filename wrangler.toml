@@ -8,6 +8,11 @@ binding = "DB"
 database_name = "alisa"
 database_id = "27d53702-8b03-4183-99c7-d63a3a155dd6"
 
+# Workers AI — used to auto-translate owner content (service names/descriptions)
+# into the customer's language, cached in D1.
+[ai]
+binding = "AI"
+
 # Canonical home for the Alisa brand.
 [[routes]]
 pattern = "alisa.bored.investments"
