@@ -119,6 +119,24 @@ CREATE TABLE IF NOT EXISTS availability (
   FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
 );
 
+-- Saved clients per shop — so repeat walk-ins/callers are selected, not retyped.
+-- `notes` holds persistent notes the shop keeps on the client (insurance, prefs,
+-- behaviour flags like "rude", etc.).
+CREATE TABLE IF NOT EXISTS clients (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  email TEXT,
+  phone TEXT,
+  notes TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_clients_shop ON clients(shop_id);
+CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(shop_id, email);
+CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(shop_id, phone);
+
 -- Days a therapist is off (holidays, sick days) — blocks that whole date
 CREATE TABLE IF NOT EXISTS time_off (
   id TEXT PRIMARY KEY,
@@ -154,6 +172,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   stripe_charge_id TEXT,
   refunded_at INTEGER,
   reminder_sent_at INTEGER,       -- set once a day-before reminder email has gone out
+  client_id TEXT,                 -- linked saved client (nullable)
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,
   FOREIGN KEY (service_id) REFERENCES services(id),

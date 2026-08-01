@@ -4,6 +4,7 @@ import { genId } from '../lib/auth.js'
 import { formatBookingTime, dateTzString, localToUtcMs } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
 import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail } from '../lib/email.js'
+import { findOrCreateClient } from '../lib/clients.js'
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -35,6 +36,7 @@ function shell(c, active, title, body, notice) {
       ${tab('', '📊 Overview')}
       ${tab('roster', '📅 Roster')}
       ${tab('bookings', '🗓️ Bookings')}
+      ${tab('clients', '👤 Clients')}
       ${tab('services', '💆 Services')}
       ${tab('staff', '🧑‍⚕️ Therapists')}
       ${tab('settings', '⚙️ Settings')}
@@ -297,9 +299,10 @@ app.post('/bookings/:id/cancel', c => bookingAction(c, 'cancel'))
 // 24h HH:MM in a timezone, for prefilling <input type="time">
 const hm = (unix, tz) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(unix * 1000))
 const rosterWeekOf = (date) => { const dow = new Date(date + 'T12:00:00Z').getUTCDay(); return addDays(date, dow === 0 ? -6 : 1 - dow) }
+const clientsForShop = (db, shopId) => db.prepare('SELECT id,name,email,phone,notes FROM clients WHERE shop_id=? ORDER BY name COLLATE NOCASE LIMIT 1000').bind(shopId).all().then(r => r.results || [])
 
 // Shared create/edit form. `v` holds prefilled values, `action` the POST target.
-function bookingForm(shop, staff, services, action, submitLabel, v = {}) {
+function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}) {
   return `
     <form method="post" action="${action}" class="card" style="padding:22px;max-width:580px">
       <div class="row">
@@ -320,12 +323,23 @@ function bookingForm(shop, staff, services, action, submitLabel, v = {}) {
         <div class="field"><label>Custom label <span class="muted">(optional)</span></label><input name="custom_name" value="${esc(v.custom_name || '')}" placeholder="e.g. Extended session"></div>
         <div class="field" style="flex:0 0 150px"><label>Price (${shop.currency.toUpperCase()})</label><input type="number" name="price" id="pr" min="0" step="1" value="${v.price != null ? v.price : ''}"></div>
       </div>
-      <div class="row">
-        <div class="field"><label>Customer name</label><input name="customer_name" value="${esc(v.customer_name || '')}" placeholder="Walk-in"></div>
-        <div class="field"><label>Phone <span class="muted">(optional)</span></label><input name="customer_phone" value="${esc(v.customer_phone || '')}"></div>
+
+      <div class="field"><label>Client</label>
+        <select id="clientsel">
+          <option value="">➕ New client / walk-in</option>
+          ${clients.map(cl => `<option value="${cl.id}" data-name="${esc(cl.name)}" data-email="${esc(cl.email || '')}" data-phone="${esc(cl.phone || '')}" data-notes="${esc(cl.notes || '')}" ${v.client_id === cl.id ? 'selected' : ''}>${esc(cl.name)}${cl.phone ? ` · ${esc(cl.phone)}` : ''}${cl.email ? ` · ${esc(cl.email)}` : ''}</option>`).join('')}
+        </select>
+        <p class="muted" style="font-size:.78rem;margin:4px 0 0">Pick a saved client to auto-fill their details, or leave as “New client”.</p>
       </div>
-      <div class="field"><label>Customer email <span class="muted">(optional — emails a confirmation/update)</span></label><input type="email" name="customer_email" value="${esc(v.customer_email || '')}"></div>
-      <div class="field"><label>Notes <span class="muted">(optional)</span></label><input name="notes" value="${esc(v.notes || '')}" placeholder="Injuries, preferences…"></div>
+      <input type="hidden" name="client_id" id="client_id" value="${v.client_id || ''}">
+      <div id="clientnotes" class="notice" style="display:none;background:#fdf7e8;color:#8a6414;white-space:pre-wrap"></div>
+
+      <div class="row">
+        <div class="field"><label>Customer name</label><input name="customer_name" id="cn" value="${esc(v.customer_name || '')}" placeholder="Walk-in"></div>
+        <div class="field"><label>Phone <span class="muted">(optional)</span></label><input name="customer_phone" id="cp" value="${esc(v.customer_phone || '')}"></div>
+      </div>
+      <div class="field"><label>Customer email <span class="muted">(optional — emails a confirmation/update)</span></label><input type="email" name="customer_email" id="ce" value="${esc(v.customer_email || '')}"></div>
+      <div class="field"><label>Appointment notes <span class="muted">(this booking only)</span></label><input name="notes" value="${esc(v.notes || '')}" placeholder="Injuries, preferences…"></div>
       <button class="btn">${submitLabel}</button>
     </form>
     <script>
@@ -335,6 +349,11 @@ function bookingForm(shop, staff, services, action, submitLabel, v = {}) {
     function fillEnd(){const o=svc.selectedOptions[0],d=o&&o.dataset.dur?+o.dataset.dur:0;if(!d||!st.value)return;const p=st.value.split(':').map(Number);let t=Math.min(p[0]*60+p[1]+d,23*60+55);et.value=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');}
     svc.addEventListener('change',()=>{fillEnd();const o=svc.selectedOptions[0];if(o&&o.dataset.price&&!pr.value)pr.value=(+o.dataset.price/100).toFixed(0);});
     st.addEventListener('change',fillEnd);
+    // Client picker: fill contact + show the client's saved notes.
+    const cs=document.getElementById('clientsel'),cid=document.getElementById('client_id'),cnb=document.getElementById('clientnotes'),cn=document.getElementById('cn'),ce=document.getElementById('ce'),cp=document.getElementById('cp');
+    function showNotes(o){if(o&&o.value&&o.dataset.notes){cnb.textContent='📋 '+o.dataset.notes;cnb.style.display='block';}else{cnb.style.display='none';}}
+    cs.addEventListener('change',()=>{const o=cs.selectedOptions[0];cid.value=o.value;if(o.value){cn.value=o.dataset.name||'';ce.value=o.dataset.email||'';cp.value=o.dataset.phone||'';}showNotes(o);});
+    showNotes(cs.selectedOptions[0]);
     </script>`
 }
 
@@ -358,11 +377,22 @@ async function resolveBookingInput(c, shop) {
   if (!sv) return { error: true, date }
   const priceStr = (f.price || '').toString().trim()
   const priceCents = priceStr !== '' ? Math.max(0, Math.round(parseFloat(priceStr) * 100) || 0) : (explicit ? sv.price_cents : 0)
+
+  const customerName = (f.customer_name || '').toString().trim() || 'Walk-in'
+  const email = (f.customer_email || '').toString().trim().toLowerCase()
+  const phone = (f.customer_phone || '').toString().trim()
+  // Link to a saved client: the one picked (keep its contact fresh) or find/create by contact.
+  let clientId = (f.client_id || '').toString() || null
+  if (clientId) {
+    const cl = await db.prepare('SELECT id FROM clients WHERE id=? AND shop_id=?').bind(clientId, shop.id).first()
+    if (cl) await db.prepare('UPDATE clients SET name=?, email=?, phone=?, updated_at=unixepoch() WHERE id=?').bind(customerName, email || null, phone || null, clientId).run()
+    else clientId = null
+  }
+  if (!clientId) clientId = await findOrCreateClient(db, shop.id, { name: customerName, email, phone })
+
   return {
     date, staff, startUnix, endUnix, serviceId: sv.id, serviceName: customName || sv.name, priceCents,
-    customerName: (f.customer_name || '').toString().trim() || 'Walk-in',
-    email: (f.customer_email || '').toString().trim().toLowerCase(),
-    phone: (f.customer_phone || '').toString(), notes: (f.notes || '').toString(),
+    customerName, email, phone, clientId, notes: (f.notes || '').toString(),
   }
 }
 
@@ -374,12 +404,13 @@ app.get('/bookings/new', async (c) => {
   if (!staff.length) return shell(c, 'bookings', 'Add booking', `<h2>Add a booking</h2><p class="muted">Add a <a href="/dashboard/staff">therapist</a> first.</p>`)
   if (!services.length) return shell(c, 'bookings', 'Add booking', `<h2>Add a booking</h2><p class="muted">Add a <a href="/dashboard/services">service</a> first — bookings attach to one (you can still set any custom time and label).</p>`)
 
-  const v = { date, staff_id: c.req.query('staff') || staff[0].id }
+  const clients = await clientsForShop(db, shop.id)
+  const v = { date, staff_id: c.req.query('staff') || staff[0].id, client_id: c.req.query('client') || '' }
   return shell(c, 'bookings', 'Add booking', `
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Add a booking</h2>
     <p class="muted" style="margin-top:-6px">Manually schedule an appointment at any time — pick a start and end, e.g. <strong>9:10 am</strong> to <strong>10:25 am</strong>.</p>
-    ${bookingForm(shop, staff, services, '/dashboard/bookings/new', 'Add booking', v)}
+    ${bookingForm(shop, staff, services, clients, '/dashboard/bookings/new', 'Add booking', v)}
   `)
 })
 
@@ -391,10 +422,10 @@ app.post('/bookings/new', async (c) => {
   const id = genId()
   await db.prepare(`INSERT INTO bookings
     (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
-     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, 0, ?, ?, ?, 'en')`)
+     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, 0, ?, ?, ?, 'en', ?)`)
     .bind(id, shop.id, r.serviceId, r.staff.id, r.customerName, r.email, r.phone,
-      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes).run()
+      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes, r.clientId).run()
 
   if (r.email) {
     const p = sendBookingEmails(c.env, id)
@@ -409,18 +440,19 @@ app.get('/bookings/:id/edit', async (c) => {
   if (!b) return c.redirect('/dashboard/bookings')
   const staff = (await db.prepare('SELECT id,name,emoji FROM staff WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
   const services = (await db.prepare('SELECT id,name,duration_minutes,price_cents FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  const clients = await clientsForShop(db, shop.id)
   const v = {
     date: dateTzString(new Date(b.start_time * 1000), shop.timezone),
     start: hm(b.start_time, shop.timezone), end: hm(b.end_time, shop.timezone),
     staff_id: b.staff_id, service_id: b.service_id, custom_name: b.service_name,
-    price: b.price_cents ? b.price_cents / 100 : 0,
+    price: b.price_cents ? b.price_cents / 100 : 0, client_id: b.client_id || '',
     customer_name: b.customer_name, customer_email: b.customer_email, customer_phone: b.customer_phone, notes: b.notes,
   }
   return shell(c, 'bookings', 'Edit booking', `
     <a href="/dashboard/bookings" class="muted">← Back to bookings</a>
     <h2>Edit / reschedule booking</h2>
     <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></p>
-    ${bookingForm(shop, staff, services, `/dashboard/bookings/${b.id}/edit`, 'Save changes', v)}
+    ${bookingForm(shop, staff, services, clients, `/dashboard/bookings/${b.id}/edit`, 'Save changes', v)}
   `)
 })
 
@@ -432,9 +464,9 @@ app.post('/bookings/:id/edit', async (c) => {
   if (r.error) return c.redirect(`/dashboard/bookings/${id}/edit`)
 
   await db.prepare(`UPDATE bookings SET service_id=?, staff_id=?, customer_name=?, customer_email=?, customer_phone=?,
-    start_time=?, end_time=?, price_cents=?, service_name=?, staff_name=?, notes=? WHERE id=?`)
+    start_time=?, end_time=?, price_cents=?, service_name=?, staff_name=?, notes=?, client_id=? WHERE id=?`)
     .bind(r.serviceId, r.staff.id, r.customerName, r.email, r.phone,
-      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes, id).run()
+      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes, r.clientId, id).run()
 
   // If it was moved to a new time, email the customer that it was rescheduled.
   if (r.email && r.startUnix !== b.start_time) {
@@ -687,6 +719,135 @@ app.post('/settings', async (c) => {
       (f.suburb || '').toString(), (f.state || '').toString(), (f.postcode || '').toString(),
       (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, interval, shop.id).run()
   return c.redirect('/dashboard/settings')
+})
+
+// ─── Clients (saved customers + notes) ───────────────────────────────────────
+// A booking counts toward a client via client_id OR a matching email (so history
+// from before this client row existed still shows up).
+const clientMatch = `(b.client_id = cl.id OR (cl.email IS NOT NULL AND cl.email <> '' AND lower(b.customer_email) = lower(cl.email)))`
+
+app.get('/clients', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const q = (c.req.query('q') || '').trim()
+  const cols = `cl.*,
+    (SELECT COUNT(*) FROM bookings b WHERE b.shop_id = cl.shop_id AND ${clientMatch} AND b.status IN ('confirmed','completed')) AS visits,
+    (SELECT MAX(start_time) FROM bookings b WHERE b.shop_id = cl.shop_id AND ${clientMatch}) AS last_visit`
+  let rows
+  if (q) {
+    const like = `%${q.toLowerCase()}%`
+    rows = (await db.prepare(`SELECT ${cols} FROM clients cl WHERE cl.shop_id = ?
+      AND (lower(cl.name) LIKE ? OR lower(cl.email) LIKE ? OR cl.phone LIKE ?)
+      ORDER BY cl.name COLLATE NOCASE LIMIT 300`).bind(shop.id, like, like, `%${q}%`).all()).results || []
+  } else {
+    rows = (await db.prepare(`SELECT ${cols} FROM clients cl WHERE cl.shop_id = ? ORDER BY cl.updated_at DESC LIMIT 300`).bind(shop.id).all()).results || []
+  }
+  const total = (await db.prepare('SELECT COUNT(*) n FROM clients WHERE shop_id = ?').bind(shop.id).first())?.n || 0
+
+  return shell(c, 'clients', 'Clients', `
+    <div class="inline" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <h2 style="margin:0">Clients <span class="muted" style="font-size:1rem">(${total})</span></h2>
+      <form method="get" action="/dashboard/clients" class="inline" style="gap:6px">
+        <input name="q" value="${esc(q)}" placeholder="Search name, phone or email…" style="max-width:260px">
+        <button class="btn ghost sm">Search</button>
+        ${q ? `<a class="btn ghost sm" href="/dashboard/clients">Clear</a>` : ''}
+      </form>
+    </div>
+    ${rows.length ? `<div class="card" style="padding:6px 18px;margin-top:14px"><table>
+      <tr><th>Name</th><th>Phone</th><th>Email</th><th>Visits</th><th>Last visit</th><th>Notes</th></tr>
+      ${rows.map(cl => `<tr>
+        <td><a href="/dashboard/clients/${cl.id}"><strong>${esc(cl.name)}</strong></a></td>
+        <td>${esc(cl.phone || '—')}</td>
+        <td>${esc(cl.email || '—')}</td>
+        <td>${cl.visits}</td>
+        <td>${cl.last_visit ? esc(formatBookingTime(cl.last_visit, shop.timezone)) : '—'}</td>
+        <td class="muted" style="max-width:220px">${cl.notes ? esc(cl.notes.length > 60 ? cl.notes.slice(0, 60) + '…' : cl.notes) : ''}</td>
+      </tr>`).join('')}
+    </table></div>` : `<p class="muted" style="margin-top:14px">${q ? 'No clients match that search.' : 'No clients yet — they’re saved automatically when a booking is made.'}</p>`}
+
+    <div class="card" style="padding:22px;margin-top:20px;max-width:560px">
+      <h3 style="margin-top:0">Add a client</h3>
+      <form method="post" action="/dashboard/clients/new">
+        <div class="row">
+          <div class="field"><label>Name</label><input name="name" required></div>
+          <div class="field"><label>Phone</label><input name="phone"></div>
+        </div>
+        <div class="field"><label>Email</label><input type="email" name="email"></div>
+        <div class="field"><label>Notes <span class="muted">(insurance, preferences, flags…)</span></label><textarea name="notes" rows="2" placeholder="e.g. Medibank member · prefers firm pressure"></textarea></div>
+        <button class="btn">Add client</button>
+      </form>
+    </div>
+  `)
+})
+
+app.get('/clients/:id', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const cl = await db.prepare('SELECT * FROM clients WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (!cl) return c.redirect('/dashboard/clients')
+  const saved = c.req.query('saved')
+  const history = (await db.prepare(
+    `SELECT * FROM bookings b WHERE b.shop_id=? AND (b.client_id=? OR (? <> '' AND lower(b.customer_email)=lower(?))) ORDER BY start_time DESC LIMIT 100`
+  ).bind(shop.id, cl.id, cl.email || '', cl.email || '').all()).results || []
+
+  return shell(c, 'clients', cl.name, `
+    <a href="/dashboard/clients" class="muted">← All clients</a>
+    <div class="inline" style="justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:6px">
+      <h2 style="margin:0">${esc(cl.name)}</h2>
+      <div class="inline" style="gap:8px">
+        <a class="btn sm" href="/dashboard/bookings/new?client=${cl.id}">➕ Book again</a>
+        <form method="post" action="/dashboard/clients/${cl.id}/delete" onsubmit="return confirm('Delete this client? Their bookings stay, just unlinked.')"><button class="btn danger sm">Delete</button></form>
+      </div>
+    </div>
+    ${saved ? `<div class="notice ok" style="margin-top:12px">Saved ✓</div>` : ''}
+    <div class="grid g2" style="margin-top:14px;align-items:start">
+      <form method="post" action="/dashboard/clients/${cl.id}" class="card" style="padding:22px">
+        <h3 style="margin-top:0">Details</h3>
+        <div class="field"><label>Name</label><input name="name" value="${esc(cl.name)}" required></div>
+        <div class="row">
+          <div class="field"><label>Phone</label><input name="phone" value="${esc(cl.phone || '')}"></div>
+          <div class="field"><label>Email</label><input type="email" name="email" value="${esc(cl.email || '')}"></div>
+        </div>
+        <div class="field"><label>📋 Notes <span class="muted">(kept on the client — insurance, preferences, flags)</span></label>
+          <textarea name="notes" rows="6" placeholder="e.g. Medibank member. Prefers firm pressure. Was rude on last visit — take deposit.">${esc(cl.notes || '')}</textarea></div>
+        <button class="btn">Save</button>
+      </form>
+      <div>
+        <h3>Booking history</h3>
+        ${history.length ? `<div class="card" style="padding:6px 18px"><table>
+          <tr><th>When</th><th>Service</th><th>Therapist</th><th>Status</th></tr>
+          ${history.map(b => `<tr><td>${esc(formatBookingTime(b.start_time, shop.timezone))}</td><td>${esc(b.service_name || '')}</td><td>${esc(b.staff_name || '')}</td><td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td></tr>`).join('')}
+        </table></div>` : '<p class="muted">No bookings yet.</p>'}
+      </div>
+    </div>
+  `)
+})
+
+app.post('/clients/new', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const f = await c.req.parseBody()
+  const name = (f.name || '').toString().trim()
+  if (!name) return c.redirect('/dashboard/clients')
+  const id = genId()
+  await db.prepare('INSERT INTO clients (id, shop_id, name, email, phone, notes) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(id, shop.id, name, (f.email || '').toString().trim().toLowerCase() || null, (f.phone || '').toString().trim() || null, (f.notes || '').toString().trim() || null).run()
+  return c.redirect(`/dashboard/clients/${id}`)
+})
+
+app.post('/clients/:id', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
+  const cl = await db.prepare('SELECT id FROM clients WHERE id=? AND shop_id=?').bind(id, shop.id).first()
+  if (!cl) return c.redirect('/dashboard/clients')
+  const f = await c.req.parseBody()
+  await db.prepare('UPDATE clients SET name=?, email=?, phone=?, notes=?, updated_at=unixepoch() WHERE id=?')
+    .bind((f.name || 'Client').toString().trim() || 'Client', (f.email || '').toString().trim().toLowerCase() || null,
+      (f.phone || '').toString().trim() || null, (f.notes || '').toString().trim() || null, id).run()
+  return c.redirect(`/dashboard/clients/${id}?saved=1`)
+})
+
+app.post('/clients/:id/delete', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
+  await db.prepare('UPDATE bookings SET client_id=NULL WHERE client_id=? AND shop_id=?').bind(id, shop.id).run()
+  await db.prepare('DELETE FROM clients WHERE id=? AND shop_id=?').bind(id, shop.id).run()
+  return c.redirect('/dashboard/clients')
 })
 
 export default app
