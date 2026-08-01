@@ -3,7 +3,7 @@ import { layout, money, esc } from '../lib/views.js'
 import { genId } from '../lib/auth.js'
 import { formatBookingTime, dateTzString, localToUtcMs } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
-import { sendCancellationEmail, sendBookingEmails } from '../lib/email.js'
+import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail } from '../lib/email.js'
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -170,17 +170,19 @@ app.get('/roster', async (c) => {
     const dayBk = bookByDate[ds] || []
     const dnum = new Date(ds + 'T12:00:00Z').getUTCDate()
 
+    // Working chips link to "add a booking" prefilled with that day + therapist.
     const workHtml = working.map(w =>
-      `<div class="wchip"><span>${esc(w.emoji)}</span> ${esc(w.name.split(' ')[0])} <span class="whrs">${w.start_time}–${w.end_time}</span></div>`).join('')
+      `<a class="wchip" href="/dashboard/bookings/new?date=${ds}&staff=${w.id}" title="Add a booking for ${esc(w.name)}"><span>${esc(w.emoji)}</span> ${esc(w.name.split(' ')[0])} <span class="whrs">${w.start_time}–${w.end_time}</span></a>`).join('')
       + offList.map(o => `<div class="wchip off">🌴 ${esc(o.name.split(' ')[0])}</div>`).join('')
+    // Each booking block links to its edit/reschedule page.
     const bkHtml = dayBk.map(b =>
-      `<div class="bk ${b.status}"><strong>${timeOnly(b.start_time, tz)}</strong> ${esc(b.service_name || '')}
-        <div class="bkmeta">${esc(b.customer_name)} · ${esc(b.staff_name || '')}</div></div>`).join('')
+      `<a class="bk ${b.status}" href="/dashboard/bookings/${b.id}/edit"><strong>${timeOnly(b.start_time, tz)}</strong> ${esc(b.service_name || '')}
+        <div class="bkmeta">${esc(b.customer_name)} · ${esc(b.staff_name || '')}</div></a>`).join('')
 
     return `<div class="rcol${ds === today ? ' today' : ''}">
       <div class="rhead">${DOW[dow]} <span>${dnum}</span></div>
       <div class="rwork">${workHtml || '<div class="rnone">Closed</div>'}</div>
-      <div class="rbook">${bkHtml || '<div class="rnone">No bookings</div>'}</div>
+      <div class="rbook">${bkHtml || '<div class="rnone">No bookings</div>'}<a class="raddday" href="/dashboard/bookings/new?date=${ds}">＋ Add booking</a></div>
     </div>`
   }).join('')
 
@@ -200,11 +202,16 @@ app.get('/roster', async (c) => {
     .rcol.today .rhead{color:var(--accent-ink)}
     .rhead span{font-family:'Fraunces',serif;font-size:1.15rem;color:var(--ink)}
     .rwork{padding:8px 10px;border-bottom:1px dashed var(--line);display:flex;flex-direction:column;gap:4px;background:#fcfbf9}
-    .wchip{font-size:.76rem;background:#eef4f3;border-radius:8px;padding:3px 8px;color:var(--accent-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .wchip.off{background:#faf1e6;color:#8a6414}
+    .rcol a{text-decoration:none;color:inherit;display:block}
+    .wchip{font-size:.76rem;background:#eef4f3;border-radius:8px;padding:3px 8px;color:var(--accent-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+    .wchip:hover{background:#dcebe8}
+    .wchip.off{background:#faf1e6;color:#8a6414;cursor:default}
     .whrs{color:var(--muted)}
     .rbook{padding:8px 10px;display:flex;flex-direction:column;gap:6px;flex:1;min-height:60px}
-    .bk{font-size:.77rem;border-radius:8px;padding:5px 8px;border-left:3px solid var(--accent);background:#f5f8f8;line-height:1.3}
+    .bk{font-size:.77rem;border-radius:8px;padding:5px 8px;border-left:3px solid var(--accent);background:#f5f8f8;line-height:1.3;cursor:pointer}
+    .bk:hover{filter:brightness(.97)}
+    .raddday{margin-top:auto;text-align:center;color:var(--muted);font-size:.74rem;padding:6px 0 2px;border-top:1px dashed var(--line)}
+    .raddday:hover{color:var(--accent)}
     .bk.pending_payment{border-left-color:#c9a227;background:#fdf7e8}
     .bk.completed{border-left-color:#2f8a5b;background:#eef6f0}
     .bk.no_show{border-left-color:#c0492f;background:#fbeae5;opacity:.75}
@@ -249,6 +256,7 @@ app.get('/bookings', async (c) => {
         <td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td>
         <td><div class="inline">
           ${['confirmed', 'pending_payment'].includes(b.status) ? `
+            <a class="btn ghost sm" href="/dashboard/bookings/${b.id}/edit">Edit</a>
             <form method="post" action="/dashboard/bookings/${b.id}/complete"><button class="btn sm">✓ Done</button></form>
             <form method="post" action="/dashboard/bookings/${b.id}/no_show"><button class="btn ghost sm">No-show</button></form>
             <form method="post" action="/dashboard/bookings/${b.id}/cancel" onsubmit="return confirm('Cancel${b.deposit_cents && b.stripe_charge_id ? ' and refund the deposit' : ''}?')"><button class="btn danger sm">Cancel</button></form>
@@ -285,7 +293,79 @@ app.post('/bookings/:id/complete', c => bookingAction(c, 'complete'))
 app.post('/bookings/:id/no_show', c => bookingAction(c, 'no_show'))
 app.post('/bookings/:id/cancel', c => bookingAction(c, 'cancel'))
 
-// ─── Manually add a booking (any custom time, e.g. 9:10am–10:25am) ───────────
+// ─── Manually add / edit a booking (any custom time, e.g. 9:10am–10:25am) ────
+// 24h HH:MM in a timezone, for prefilling <input type="time">
+const hm = (unix, tz) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(unix * 1000))
+const rosterWeekOf = (date) => { const dow = new Date(date + 'T12:00:00Z').getUTCDay(); return addDays(date, dow === 0 ? -6 : 1 - dow) }
+
+// Shared create/edit form. `v` holds prefilled values, `action` the POST target.
+function bookingForm(shop, staff, services, action, submitLabel, v = {}) {
+  return `
+    <form method="post" action="${action}" class="card" style="padding:22px;max-width:580px">
+      <div class="row">
+        <div class="field"><label>Date</label><input type="date" name="date" value="${v.date || ''}" required></div>
+        <div class="field"><label>Therapist</label><select name="staff_id" required>${staff.map(s => `<option value="${s.id}" ${v.staff_id === s.id ? 'selected' : ''}>${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
+      </div>
+      <div class="field"><label>Service</label>
+        <select name="service_id" id="svc">
+          <option value="">Custom / other</option>
+          ${services.map(s => `<option value="${s.id}" data-dur="${s.duration_minutes}" data-price="${s.price_cents}" ${v.service_id === s.id ? 'selected' : ''}>${esc(s.name)} · ${s.duration_minutes} min</option>`).join('')}
+        </select>
+      </div>
+      <div class="row">
+        <div class="field"><label>Start time</label><input type="time" name="start" id="st" step="300" value="${v.start || '09:00'}" required></div>
+        <div class="field"><label>End time</label><input type="time" name="end" id="et" step="300" value="${v.end || '10:00'}" required></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Custom label <span class="muted">(optional)</span></label><input name="custom_name" value="${esc(v.custom_name || '')}" placeholder="e.g. Extended session"></div>
+        <div class="field" style="flex:0 0 150px"><label>Price (${shop.currency.toUpperCase()})</label><input type="number" name="price" id="pr" min="0" step="1" value="${v.price != null ? v.price : ''}"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Customer name</label><input name="customer_name" value="${esc(v.customer_name || '')}" placeholder="Walk-in"></div>
+        <div class="field"><label>Phone <span class="muted">(optional)</span></label><input name="customer_phone" value="${esc(v.customer_phone || '')}"></div>
+      </div>
+      <div class="field"><label>Customer email <span class="muted">(optional — emails a confirmation/update)</span></label><input type="email" name="customer_email" value="${esc(v.customer_email || '')}"></div>
+      <div class="field"><label>Notes <span class="muted">(optional)</span></label><input name="notes" value="${esc(v.notes || '')}" placeholder="Injuries, preferences…"></div>
+      <button class="btn">${submitLabel}</button>
+    </form>
+    <script>
+    // Picking a service auto-fills the end time (start + duration) and price,
+    // but both stay fully editable — that's the point of custom bookings.
+    const svc=document.getElementById('svc'),st=document.getElementById('st'),et=document.getElementById('et'),pr=document.getElementById('pr');
+    function fillEnd(){const o=svc.selectedOptions[0],d=o&&o.dataset.dur?+o.dataset.dur:0;if(!d||!st.value)return;const p=st.value.split(':').map(Number);let t=Math.min(p[0]*60+p[1]+d,23*60+55);et.value=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');}
+    svc.addEventListener('change',()=>{fillEnd();const o=svc.selectedOptions[0];if(o&&o.dataset.price&&!pr.value)pr.value=(+o.dataset.price/100).toFixed(0);});
+    st.addEventListener('change',fillEnd);
+    </script>`
+}
+
+// Parse + validate the shared booking form. Returns { error } or the resolved fields.
+async function resolveBookingInput(c, shop) {
+  const db = c.env.DB, f = await c.req.parseBody()
+  const date = (f.date || '').toString(), startT = (f.start || '').toString(), endT = (f.end || '').toString()
+  const staffId = (f.staff_id || '').toString()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(startT) || !/^\d{1,2}:\d{2}$/.test(endT) || !staffId) return { error: true, date }
+  const staff = await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first()
+  if (!staff) return { error: true, date }
+  const startUnix = Math.floor(localToUtcMs(date, startT, shop.timezone) / 1000)
+  const endUnix = Math.floor(localToUtcMs(date, endT, shop.timezone) / 1000)
+  if (endUnix <= startUnix) return { error: true, date }
+
+  // service_id is a NOT NULL foreign key D1 enforces, so anchor to a real row.
+  const customName = (f.custom_name || '').toString().trim()
+  let sv = f.service_id ? await db.prepare('SELECT id,name,price_cents FROM services WHERE id=? AND shop_id=?').bind(f.service_id.toString(), shop.id).first() : null
+  const explicit = !!sv
+  if (!sv) sv = await db.prepare('SELECT id,name,price_cents FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at LIMIT 1').bind(shop.id).first()
+  if (!sv) return { error: true, date }
+  const priceStr = (f.price || '').toString().trim()
+  const priceCents = priceStr !== '' ? Math.max(0, Math.round(parseFloat(priceStr) * 100) || 0) : (explicit ? sv.price_cents : 0)
+  return {
+    date, staff, startUnix, endUnix, serviceId: sv.id, serviceName: customName || sv.name, priceCents,
+    customerName: (f.customer_name || '').toString().trim() || 'Walk-in',
+    email: (f.customer_email || '').toString().trim().toLowerCase(),
+    phone: (f.customer_phone || '').toString(), notes: (f.notes || '').toString(),
+  }
+}
+
 app.get('/bookings/new', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
   const date = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query('date') || '') ? c.req.query('date') : dateTzString(new Date(), shop.timezone)
@@ -294,88 +374,74 @@ app.get('/bookings/new', async (c) => {
   if (!staff.length) return shell(c, 'bookings', 'Add booking', `<h2>Add a booking</h2><p class="muted">Add a <a href="/dashboard/staff">therapist</a> first.</p>`)
   if (!services.length) return shell(c, 'bookings', 'Add booking', `<h2>Add a booking</h2><p class="muted">Add a <a href="/dashboard/services">service</a> first — bookings attach to one (you can still set any custom time and label).</p>`)
 
+  const v = { date, staff_id: c.req.query('staff') || staff[0].id }
   return shell(c, 'bookings', 'Add booking', `
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Add a booking</h2>
     <p class="muted" style="margin-top:-6px">Manually schedule an appointment at any time — pick a start and end, e.g. <strong>9:10 am</strong> to <strong>10:25 am</strong>.</p>
-    <form method="post" action="/dashboard/bookings/new" class="card" style="padding:22px;max-width:580px">
-      <div class="row">
-        <div class="field"><label>Date</label><input type="date" name="date" value="${date}" required></div>
-        <div class="field"><label>Therapist</label><select name="staff_id" required>${staff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
-      </div>
-      <div class="field"><label>Service</label>
-        <select name="service_id" id="svc">
-          <option value="">Custom / other</option>
-          ${services.map(s => `<option value="${s.id}" data-dur="${s.duration_minutes}">${esc(s.name)} · ${s.duration_minutes} min</option>`).join('')}
-        </select>
-      </div>
-      <div class="row">
-        <div class="field"><label>Start time</label><input type="time" name="start" id="st" step="300" value="09:00" required></div>
-        <div class="field"><label>End time</label><input type="time" name="end" id="et" step="300" value="10:00" required></div>
-      </div>
-      <div class="field"><label>Custom label <span class="muted">(optional — overrides the service name)</span></label><input name="custom_name" placeholder="e.g. Extended session"></div>
-      <div class="row">
-        <div class="field"><label>Customer name</label><input name="customer_name" placeholder="Walk-in"></div>
-        <div class="field"><label>Phone <span class="muted">(optional)</span></label><input name="customer_phone"></div>
-      </div>
-      <div class="field"><label>Customer email <span class="muted">(optional — emails them a confirmation)</span></label><input type="email" name="customer_email"></div>
-      <div class="field"><label>Notes <span class="muted">(optional)</span></label><input name="notes" placeholder="Injuries, preferences…"></div>
-      <button class="btn">Add booking</button>
-    </form>
-    <script>
-    // When a service is picked, auto-fill the end time (start + duration); the
-    // owner can still override it to any custom end (that's the whole point).
-    const svc=document.getElementById('svc'),st=document.getElementById('st'),et=document.getElementById('et');
-    function autoEnd(){const o=svc.selectedOptions[0],d=o&&o.dataset.dur?+o.dataset.dur:0;if(!d||!st.value)return;const p=st.value.split(':').map(Number);let t=Math.min(p[0]*60+p[1]+d,23*60+55);et.value=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');}
-    svc.addEventListener('change',autoEnd);st.addEventListener('change',autoEnd);
-    </script>
+    ${bookingForm(shop, staff, services, '/dashboard/bookings/new', 'Add booking', v)}
   `)
 })
 
 app.post('/bookings/new', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
-  const f = await c.req.parseBody()
-  const date = (f.date || '').toString(), startT = (f.start || '').toString(), endT = (f.end || '').toString()
-  const staffId = (f.staff_id || '').toString()
-  const back = `/dashboard/bookings/new${date ? `?date=${date}` : ''}`
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(startT) || !/^\d{1,2}:\d{2}$/.test(endT) || !staffId) return c.redirect(back)
-  const staff = await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first()
-  if (!staff) return c.redirect(back)
-
-  const startUnix = Math.floor(localToUtcMs(date, startT, shop.timezone) / 1000)
-  const endUnix = Math.floor(localToUtcMs(date, endT, shop.timezone) / 1000)
-  if (endUnix <= startUnix) return c.redirect(back)
-
-  // service_id is a NOT NULL foreign key, so a booking always anchors to a real
-  // service row: the one picked, or the shop's first service for a "custom"
-  // booking. The displayed name/price come from the custom label when given.
-  const customName = (f.custom_name || '').toString().trim()
-  let sv = f.service_id ? await db.prepare('SELECT id,name,price_cents FROM services WHERE id=? AND shop_id=?').bind(f.service_id.toString(), shop.id).first() : null
-  const explicit = !!sv
-  if (!sv) sv = await db.prepare('SELECT id,name,price_cents FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at LIMIT 1').bind(shop.id).first()
-  if (!sv) return c.redirect(back)
-  const serviceId = sv.id
-  const serviceName = customName || sv.name
-  const priceCents = explicit ? sv.price_cents : 0
+  const r = await resolveBookingInput(c, shop)
+  if (r.error) return c.redirect(`/dashboard/bookings/new${r.date ? `?date=${r.date}` : ''}`)
 
   const id = genId()
-  const email = (f.customer_email || '').toString().trim().toLowerCase()
   await db.prepare(`INSERT INTO bookings
     (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
      start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, 0, ?, ?, ?, 'en')`)
-    .bind(id, shop.id, serviceId, staff.id, (f.customer_name || '').toString().trim() || 'Walk-in', email,
-      (f.customer_phone || '').toString(), startUnix, endUnix, priceCents, serviceName, staff.name, (f.notes || '').toString()).run()
+    .bind(id, shop.id, r.serviceId, r.staff.id, r.customerName, r.email, r.phone,
+      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes).run()
 
-  // Email a confirmation only if the owner supplied a customer email.
-  if (email) {
+  if (r.email) {
     const p = sendBookingEmails(c.env, id)
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
   }
+  return c.redirect(`/dashboard/roster?week=${rosterWeekOf(r.date)}`)
+})
 
-  const dow = new Date(date + 'T12:00:00Z').getUTCDay()
-  const monday = addDays(date, dow === 0 ? -6 : 1 - dow)
-  return c.redirect(`/dashboard/roster?week=${monday}`)
+app.get('/bookings/:id/edit', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (!b) return c.redirect('/dashboard/bookings')
+  const staff = (await db.prepare('SELECT id,name,emoji FROM staff WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  const services = (await db.prepare('SELECT id,name,duration_minutes,price_cents FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  const v = {
+    date: dateTzString(new Date(b.start_time * 1000), shop.timezone),
+    start: hm(b.start_time, shop.timezone), end: hm(b.end_time, shop.timezone),
+    staff_id: b.staff_id, service_id: b.service_id, custom_name: b.service_name,
+    price: b.price_cents ? b.price_cents / 100 : 0,
+    customer_name: b.customer_name, customer_email: b.customer_email, customer_phone: b.customer_phone, notes: b.notes,
+  }
+  return shell(c, 'bookings', 'Edit booking', `
+    <a href="/dashboard/bookings" class="muted">← Back to bookings</a>
+    <h2>Edit / reschedule booking</h2>
+    <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></p>
+    ${bookingForm(shop, staff, services, `/dashboard/bookings/${b.id}/edit`, 'Save changes', v)}
+  `)
+})
+
+app.post('/bookings/:id/edit', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
+  const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(id, shop.id).first()
+  if (!b) return c.redirect('/dashboard/bookings')
+  const r = await resolveBookingInput(c, shop)
+  if (r.error) return c.redirect(`/dashboard/bookings/${id}/edit`)
+
+  await db.prepare(`UPDATE bookings SET service_id=?, staff_id=?, customer_name=?, customer_email=?, customer_phone=?,
+    start_time=?, end_time=?, price_cents=?, service_name=?, staff_name=?, notes=? WHERE id=?`)
+    .bind(r.serviceId, r.staff.id, r.customerName, r.email, r.phone,
+      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes, id).run()
+
+  // If it was moved to a new time, email the customer that it was rescheduled.
+  if (r.email && r.startUnix !== b.start_time) {
+    const p = sendRescheduleEmail(c.env, id)
+    if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
+  }
+  return c.redirect(`/dashboard/roster?week=${rosterWeekOf(r.date)}`)
 })
 
 // ─── Services ────────────────────────────────────────────────────────────────

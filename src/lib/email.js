@@ -162,6 +162,47 @@ export function reminderEmail(lang, { shop, b, base }) {
   return { subject: t(lang, 'email_reminder_subject', { shop: shop.name }), html: shell(accent, shop.emoji, shop.name, inner), text }
 }
 
+// Localized "your appointment was moved" email for the customer.
+export function rescheduleEmail(lang, { shop, b, base }) {
+  const accent = shop.accent || '#0f766e'
+  const when = formatBookingTime(b.start_time, shop.timezone)
+  const rows = [
+    detailRow(t(lang, 'c_service'), b.service_name || ''),
+    detailRow(t(lang, 'c_therapist'), b.staff_name || t(lang, 'our_team')),
+    detailRow(t(lang, 'c_when'), when),
+  ].join('')
+  const url = `${base}/${shop.slug}/booked/${b.id}`
+  const contact = shop.phone || shop.name
+  const inner = `
+    <h1 style="font-size:20px;margin:0 0 6px">🔄 ${safe(t(lang, 'email_rescheduled_head'))}</h1>
+    <p style="color:#6b7c7a;font-size:14px;margin:0 0 4px">${safe(t(lang, 'email_hi', { name: b.customer_name }))}</p>
+    <p style="color:#6b7c7a;font-size:14px;margin:0 0 16px">${safe(t(lang, 'email_reschedule_intro'))}</p>
+    <table style="width:100%;border-collapse:collapse">${rows}</table>
+    <div style="margin-top:22px"><a href="${safe(url)}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:999px">${safe(t(lang, 'email_view_booking'))} →</a></div>
+    <p style="color:#6b7c7a;font-size:13px;margin:18px 0 0">${safe(t(lang, 'email_questions', { contact }))}</p>`
+  const text = `${t(lang, 'email_rescheduled_head')}\n${t(lang, 'email_reschedule_intro')}\n\n`
+    + `${t(lang, 'c_service')}: ${b.service_name}\n${t(lang, 'c_therapist')}: ${b.staff_name || t(lang, 'our_team')}\n${t(lang, 'c_when')}: ${when}\n`
+    + `\n${url}\n${t(lang, 'email_questions', { contact })}`
+  return { subject: t(lang, 'email_reschedule_subject', { shop: shop.name }), html: shell(accent, shop.emoji, shop.name, inner), text }
+}
+
+// Email the customer that their booking moved to a new time (best-effort).
+export async function sendRescheduleEmail(env, bookingId) {
+  try {
+    const db = env.DB
+    const b = await db.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first()
+    if (!b || !b.customer_email || b.status === 'cancelled') return
+    const shop = await db.prepare('SELECT * FROM shops WHERE id = ?').bind(b.shop_id).first()
+    if (!shop) return
+    const base = env.BASE_URL || 'https://alisa.bored.investments'
+    const m = rescheduleEmail(b.lang || 'en', { shop, b, base })
+    const r = await sendEmail(env, { to: b.customer_email, subject: m.subject, html: m.html, text: m.text, replyTo: shop.email || undefined })
+    if (!r.ok) console.error('reschedule email failed:', r.error)
+  } catch (e) {
+    console.error('sendRescheduleEmail failed:', String(e))
+  }
+}
+
 // Email the customer that their booking was cancelled (best-effort).
 export async function sendCancellationEmail(env, bookingId) {
   try {

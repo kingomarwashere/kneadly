@@ -79,6 +79,7 @@ const DICT = {
     email_cancel_subject: 'Your booking at {shop} was cancelled', email_cancelled_head: 'Booking cancelled',
     email_cancel_intro: 'The booking below has been cancelled.', email_refunded: 'Your {amount} deposit has been refunded to your card.',
     email_reminder_subject: 'Reminder: your appointment at {shop}', email_reminder_head: 'See you soon 👋', email_reminder_intro: 'A friendly reminder about your upcoming appointment at {shop}.',
+    email_reschedule_subject: 'Your appointment at {shop} has been moved', email_rescheduled_head: 'Appointment rescheduled', email_reschedule_intro: 'Your appointment has been moved to a new time — the updated details are below.',
   },
   th: {
     dashboard: 'แดชบอร์ด', login: 'เข้าสู่ระบบ', signup: 'เริ่มใช้ฟรี',
@@ -140,6 +141,7 @@ const DICT = {
     email_cancel_subject: 'การจองของคุณที่ {shop} ถูกยกเลิกแล้ว', email_cancelled_head: 'ยกเลิกการจองแล้ว',
     email_cancel_intro: 'การจองด้านล่างถูกยกเลิกแล้ว', email_refunded: 'คืนเงินมัดจำ {amount} เข้าบัตรของคุณแล้ว',
     email_reminder_subject: 'แจ้งเตือน: นัดหมายของคุณที่ {shop}', email_reminder_head: 'แล้วพบกันเร็ว ๆ นี้ 👋', email_reminder_intro: 'แจ้งเตือนนัดหมายที่กำลังจะมาถึงของคุณที่ {shop}',
+    email_reschedule_subject: 'นัดหมายของคุณที่ {shop} ถูกเลื่อนแล้ว', email_rescheduled_head: 'เลื่อนนัดหมายแล้ว', email_reschedule_intro: 'นัดหมายของคุณถูกเลื่อนไปเป็นเวลาใหม่ — รายละเอียดที่อัปเดตอยู่ด้านล่าง',
   },
   zh: {
     dashboard: '仪表板', login: '登录', signup: '免费开始',
@@ -201,6 +203,7 @@ const DICT = {
     email_cancel_subject: '您在 {shop} 的预约已取消', email_cancelled_head: '预约已取消',
     email_cancel_intro: '以下预约已被取消。', email_refunded: '您的 {amount} 定金已退回到您的卡。',
     email_reminder_subject: '提醒：您在 {shop} 的预约', email_reminder_head: '期待见到您 👋', email_reminder_intro: '友情提醒您在 {shop} 即将到来的预约。',
+    email_reschedule_subject: '您在 {shop} 的预约已改期', email_rescheduled_head: '预约已改期', email_reschedule_intro: '您的预约已改到新的时间——更新后的详情如下。',
   },
   vi: {
     dashboard: 'Bảng điều khiển', login: 'Đăng nhập', signup: 'Bắt đầu miễn phí',
@@ -262,6 +265,7 @@ const DICT = {
     email_cancel_subject: 'Lịch hẹn của bạn tại {shop} đã bị hủy', email_cancelled_head: 'Đã hủy lịch hẹn',
     email_cancel_intro: 'Lịch hẹn dưới đây đã bị hủy.', email_refunded: 'Tiền cọc {amount} của bạn đã được hoàn về thẻ.',
     email_reminder_subject: 'Nhắc nhở: lịch hẹn của bạn tại {shop}', email_reminder_head: 'Hẹn sớm gặp bạn 👋', email_reminder_intro: 'Nhắc nhở thân thiện về lịch hẹn sắp tới của bạn tại {shop}.',
+    email_reschedule_subject: 'Lịch hẹn của bạn tại {shop} đã được dời', email_rescheduled_head: 'Đã dời lịch hẹn', email_reschedule_intro: 'Lịch hẹn của bạn đã được dời sang giờ mới — chi tiết cập nhật bên dưới.',
   },
   ko: {
     dashboard: '대시보드', login: '로그인', signup: '무료로 시작',
@@ -323,6 +327,7 @@ const DICT = {
     email_cancel_subject: '{shop} 예약이 취소되었습니다', email_cancelled_head: '예약 취소됨',
     email_cancel_intro: '아래 예약이 취소되었습니다.', email_refunded: '{amount} 예약금이 카드로 환불되었습니다.',
     email_reminder_subject: '알림: {shop} 예약', email_reminder_head: '곧 뵙겠습니다 👋', email_reminder_intro: '{shop}의 다가오는 예약을 알려드립니다.',
+    email_reschedule_subject: '{shop} 예약이 변경되었습니다', email_rescheduled_head: '예약 일정 변경됨', email_reschedule_intro: '예약이 새로운 시간으로 변경되었습니다 — 아래에서 변경된 내용을 확인하세요.',
   },
   ja: {
     dashboard: 'ダッシュボード', login: 'ログイン', signup: '無料で始める',
@@ -384,6 +389,7 @@ const DICT = {
     email_cancel_subject: '{shop} のご予約がキャンセルされました', email_cancelled_head: 'ご予約キャンセル',
     email_cancel_intro: '以下のご予約はキャンセルされました。', email_refunded: '{amount} の手付金をカードへ返金しました。',
     email_reminder_subject: 'リマインダー：{shop} のご予約', email_reminder_head: 'お会いできるのを楽しみにしています 👋', email_reminder_intro: '{shop} での次回のご予約のリマインダーです。',
+    email_reschedule_subject: '{shop} のご予約が変更されました', email_rescheduled_head: 'ご予約の日程変更', email_reschedule_intro: 'ご予約が新しい時間に変更されました — 更新後の詳細は以下のとおりです。',
   },
 }
 
