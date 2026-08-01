@@ -234,7 +234,7 @@ async function renderWeekRoster(c) {
     // Each booking block links to its edit/reschedule page.
     const bkHtml = dayBk.map(b =>
       `<a class="bk ${b.status}" href="/dashboard/bookings/${b.id}/edit"><strong>${timeOnly(b.start_time, tz)}</strong> ${esc(b.service_name || '')}
-        <div class="bkmeta">${esc(b.customer_name)} · ${esc(b.staff_name || '')}</div></a>`).join('')
+        <div class="bkmeta">${esc(b.customer_name)} · ${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</div></a>`).join('')
 
     return `<div class="rcol${ds === today ? ' today' : ''}">
       <div class="rhead">${DOW[dow]} <span>${dnum}</span></div>
@@ -294,8 +294,8 @@ async function renderDayRoster(c) {
     const offb = off ? `<div class="offband">🌴 Day off</div>` : ''
     const blocks = (bkByStaff[st.id] || []).map(b => {
       const s = minsOfDay(b.start_time, tz), e = minsOfDay(b.end_time, tz)
-      return `<div class="dblock ${b.status}" data-id="${b.id}" data-edit="/dashboard/bookings/${b.id}/edit" data-move="/dashboard/bookings/${b.id}/move" style="top:${s - gridStart}px;height:${Math.max(20, e - s)}px" title="Drag to move · click to edit">
-        <div class="dbtime">${timeOnly(b.start_time, tz)}</div><div class="dbname">${esc(b.customer_name)}</div><div class="dbsvc">${esc(b.service_name || '')}</div></div>`
+      return `<div class="dblock ${b.status}" data-id="${b.id}"${b.requested_staff ? ' data-locked="1"' : ''} data-edit="/dashboard/bookings/${b.id}/edit" data-move="/dashboard/bookings/${b.id}/move" style="top:${s - gridStart}px;height:${Math.max(20, e - s)}px" title="${b.requested_staff ? 'Requested therapist (locked) · ' : ''}Drag to move · click to edit">
+        <div class="dbtime">${timeOnly(b.start_time, tz)}${b.requested_staff ? ' ❤️' : ''}</div><div class="dbname">${esc(b.customer_name)}</div><div class="dbsvc">${esc(b.service_name || '')}</div></div>`
     }).join('')
     const hrs = (a && !off) ? `<span class="whrs">${a.start_time}–${a.end_time}</span>` : `<span class="whrs">${off ? 'off' : 'closed'}</span>`
     return {
@@ -338,11 +338,11 @@ async function renderDayRoster(c) {
           const body=el.parentElement, br=body.getBoundingClientRect();
           let top=Math.max(0,Math.min(e.clientY-br.top-12, body.clientHeight-el.offsetHeight));
           el.style.top=top+'px'; d.curTop=top;
-          const col=colUnder(e.clientX); bodies.forEach(b=>b.classList.toggle('dropcol',b===col)); });
+          const col=el.dataset.locked?el.parentElement:colUnder(e.clientX); bodies.forEach(b=>b.classList.toggle('dropcol',b===col)); });
         el.addEventListener('pointerup',async e=>{ if(!d||d.el!==el)return;
           el.releasePointerCapture(e.pointerId); bodies.forEach(b=>b.classList.remove('dropcol')); el.classList.remove('dragging');
           if(!d.moved){ location.href=el.dataset.edit; d=null; return; }
-          const col=colUnder(e.clientX)||el.parentElement;
+          const col=el.dataset.locked?el.parentElement:(colUnder(e.clientX)||el.parentElement);
           const mins=GRID_START+Math.round((d.curTop!=null?d.curTop:d.startTop)/INTERVAL)*INTERVAL;
           const staff=col.dataset.staff, url=el.dataset.move; d=null;
           try{ await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({date:DATE,staff_id:staff,start:fmt(mins)})}); }catch(_){}
@@ -369,8 +369,12 @@ app.post('/bookings/:id/move', async (c) => {
   if (!staff) return c.json({ error: 'bad staff' }, 400)
   const dur = b.end_time - b.start_time
   const startUnix = Math.floor(localToUtcMs(date, startT, shop.timezone) / 1000)
+  // If the client requested this therapist, the time can change but the
+  // therapist stays locked.
+  const finalStaffId = b.requested_staff ? b.staff_id : staff.id
+  const finalStaffName = b.requested_staff ? b.staff_name : staff.name
   await db.prepare('UPDATE bookings SET start_time=?, end_time=?, staff_id=?, staff_name=? WHERE id=?')
-    .bind(startUnix, startUnix + dur, staff.id, staff.name, id).run()
+    .bind(startUnix, startUnix + dur, finalStaffId, finalStaffName, id).run()
   if (b.customer_email && startUnix !== b.start_time) {
     const p = sendRescheduleEmail(c.env, id)
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
@@ -402,7 +406,7 @@ app.get('/bookings', async (c) => {
         <td>${formatBookingTime(b.start_time, shop.timezone)}</td>
         <td>${esc(b.customer_name)}<div class="muted" style="font-size:.8rem">${esc(b.customer_email)}${b.customer_phone ? ' · ' + esc(b.customer_phone) : ''}</div>${b.notes ? `<div class="muted" style="font-size:.8rem">📝 ${esc(b.notes)}</div>` : ''}</td>
         <td>${esc(b.service_name)}</td>
-        <td>${esc(b.staff_name || '')}</td>
+        <td>${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</td>
         <td>${b.deposit_cents ? money(b.deposit_cents, shop.currency) : '—'}${b.refunded_at ? '<div class="muted" style="font-size:.75rem">refunded</div>' : ''}</td>
         <td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td>
         <td><div class="inline">
@@ -494,6 +498,7 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
       </div>
       <div class="field"><label>Customer email <span class="muted">(optional — emails a confirmation/update)</span></label><input type="email" name="customer_email" id="ce" value="${esc(v.customer_email || '')}"></div>
       <div class="field"><label>Appointment notes <span class="muted">(this booking only)</span></label><input name="notes" value="${esc(v.notes || '')}" placeholder="Injuries, preferences…"></div>
+      <div class="field"><label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" name="requested_staff" value="1" style="width:auto" ${v.requested_staff ? 'checked' : ''}> ❤️ Client requested this therapist — don’t reassign to anyone else</label></div>
       <button class="btn">${submitLabel}</button>
     </form>
     <script>
@@ -546,7 +551,7 @@ async function resolveBookingInput(c, shop) {
 
   return {
     date, staff, startUnix, endUnix, serviceId: sv.id, serviceName: customName || sv.name, priceCents,
-    customerName, email, phone, clientId, notes: (f.notes || '').toString(),
+    customerName, email, phone, clientId, notes: (f.notes || '').toString(), requested: f.requested_staff ? 1 : 0,
   }
 }
 
@@ -582,10 +587,10 @@ app.post('/bookings/new', async (c) => {
   const id = genId()
   await db.prepare(`INSERT INTO bookings
     (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
-     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, 0, ?, ?, ?, 'en', ?)`)
+     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, 0, ?, ?, ?, 'en', ?, ?)`)
     .bind(id, shop.id, r.serviceId, r.staff.id, r.customerName, r.email, r.phone,
-      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes, r.clientId).run()
+      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes, r.clientId, r.requested).run()
 
   if (r.email) {
     const p = sendBookingEmails(c.env, id)
@@ -605,7 +610,7 @@ app.get('/bookings/:id/edit', async (c) => {
     date: dateTzString(new Date(b.start_time * 1000), shop.timezone),
     start: hm(b.start_time, shop.timezone), end: hm(b.end_time, shop.timezone),
     staff_id: b.staff_id, service_id: b.service_id, custom_name: b.service_name,
-    price: b.price_cents ? b.price_cents / 100 : 0, client_id: b.client_id || '',
+    price: b.price_cents ? b.price_cents / 100 : 0, client_id: b.client_id || '', requested_staff: b.requested_staff,
     customer_name: b.customer_name, customer_email: b.customer_email, customer_phone: b.customer_phone, notes: b.notes,
   }
   return shell(c, 'bookings', 'Edit booking', `
@@ -624,9 +629,9 @@ app.post('/bookings/:id/edit', async (c) => {
   if (r.error) return c.redirect(`/dashboard/bookings/${id}/edit`)
 
   await db.prepare(`UPDATE bookings SET service_id=?, staff_id=?, customer_name=?, customer_email=?, customer_phone=?,
-    start_time=?, end_time=?, price_cents=?, service_name=?, staff_name=?, notes=?, client_id=? WHERE id=?`)
+    start_time=?, end_time=?, price_cents=?, service_name=?, staff_name=?, notes=?, client_id=?, requested_staff=? WHERE id=?`)
     .bind(r.serviceId, r.staff.id, r.customerName, r.email, r.phone,
-      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes, r.clientId, id).run()
+      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes, r.clientId, r.requested, id).run()
 
   // If it was moved to a new time, email the customer that it was rescheduled.
   if (r.email && r.startUnix !== b.start_time) {
@@ -930,7 +935,8 @@ app.get('/clients', async (c) => {
   const q = (c.req.query('q') || '').trim()
   const cols = `cl.*,
     (SELECT COUNT(*) FROM bookings b WHERE b.shop_id = cl.shop_id AND ${clientMatch} AND b.status IN ('confirmed','completed')) AS visits,
-    (SELECT MAX(start_time) FROM bookings b WHERE b.shop_id = cl.shop_id AND ${clientMatch}) AS last_visit`
+    (SELECT MAX(start_time) FROM bookings b WHERE b.shop_id = cl.shop_id AND ${clientMatch}) AS last_visit,
+    (SELECT COALESCE(SUM(price_cents),0) FROM bookings b WHERE b.shop_id = cl.shop_id AND ${clientMatch} AND b.status IN ('confirmed','completed')) AS spent`
   let rows
   if (q) {
     const like = `%${q.toLowerCase()}%`
@@ -952,14 +958,14 @@ app.get('/clients', async (c) => {
       </form>
     </div>
     ${rows.length ? `<div class="card" style="padding:6px 18px;margin-top:14px"><table>
-      <tr><th>Name</th><th>Phone</th><th>Email</th><th>Visits</th><th>Last visit</th><th>Notes</th></tr>
+      <tr><th>Name</th><th>Phone</th><th>Visits</th><th>Total spent</th><th>Last visit</th><th>Notes</th></tr>
       ${rows.map(cl => `<tr>
-        <td><a href="/dashboard/clients/${cl.id}"><strong>${esc(cl.name)}</strong></a></td>
+        <td><a href="/dashboard/clients/${cl.id}"><strong>${esc(cl.name)}</strong></a>${cl.email ? `<div class="muted" style="font-size:.78rem">${esc(cl.email)}</div>` : ''}</td>
         <td>${esc(cl.phone || '—')}</td>
-        <td>${esc(cl.email || '—')}</td>
         <td>${cl.visits}</td>
+        <td>${money(cl.spent || 0, shop.currency)}</td>
         <td>${cl.last_visit ? esc(formatBookingTime(cl.last_visit, shop.timezone)) : '—'}</td>
-        <td class="muted" style="max-width:220px">${cl.notes ? esc(cl.notes.length > 60 ? cl.notes.slice(0, 60) + '…' : cl.notes) : ''}</td>
+        <td class="muted" style="max-width:200px">${cl.notes ? esc(cl.notes.length > 50 ? cl.notes.slice(0, 50) + '…' : cl.notes) : ''}</td>
       </tr>`).join('')}
     </table></div>` : `<p class="muted" style="margin-top:14px">${q ? 'No clients match that search.' : 'No clients yet — they’re saved automatically when a booking is made.'}</p>`}
 
@@ -986,6 +992,13 @@ app.get('/clients/:id', async (c) => {
   const history = (await db.prepare(
     `SELECT * FROM bookings b WHERE b.shop_id=? AND (b.client_id=? OR (? <> '' AND lower(b.customer_email)=lower(?))) ORDER BY start_time DESC LIMIT 100`
   ).bind(shop.id, cl.id, cl.email || '', cl.email || '').all()).results || []
+  // Lifetime totals (confirmed + completed).
+  const tot = await db.prepare(
+    `SELECT COUNT(*) visits, COALESCE(SUM(end_time-start_time),0) secs, COALESCE(SUM(price_cents),0) spent
+     FROM bookings b WHERE b.shop_id=? AND (b.client_id=? OR (? <> '' AND lower(b.customer_email)=lower(?))) AND b.status IN ('confirmed','completed')`
+  ).bind(shop.id, cl.id, cl.email || '', cl.email || '').first()
+  const totMin = Math.round((tot?.secs || 0) / 60)
+  const totTime = totMin >= 60 ? `${Math.floor(totMin / 60)}h ${totMin % 60}m` : `${totMin}m`
 
   return shell(c, 'clients', cl.name, `
     <a href="/dashboard/clients" class="muted">← All clients</a>
@@ -997,6 +1010,11 @@ app.get('/clients/:id', async (c) => {
       </div>
     </div>
     ${saved ? `<div class="notice ok" style="margin-top:12px">Saved ✓</div>` : ''}
+    <div class="grid g3" style="margin:14px 0 4px">
+      <div class="card" style="padding:16px"><div class="muted">Visits</div><div class="stat">${tot?.visits || 0}</div></div>
+      <div class="card" style="padding:16px"><div class="muted">Total time</div><div class="stat">${totTime}</div></div>
+      <div class="card" style="padding:16px"><div class="muted">Total pay</div><div class="stat">${money(tot?.spent || 0, shop.currency)}</div></div>
+    </div>
     <div class="grid g2" style="margin-top:14px;align-items:start">
       <form method="post" action="/dashboard/clients/${cl.id}" class="card" style="padding:22px">
         <h3 style="margin-top:0">Details</h3>
@@ -1013,7 +1031,7 @@ app.get('/clients/:id', async (c) => {
         <h3>Booking history</h3>
         ${history.length ? `<div class="card" style="padding:6px 18px"><table>
           <tr><th>When</th><th>Service</th><th>Therapist</th><th>Status</th></tr>
-          ${history.map(b => `<tr><td>${esc(formatBookingTime(b.start_time, shop.timezone))}</td><td>${esc(b.service_name || '')}</td><td>${esc(b.staff_name || '')}</td><td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td></tr>`).join('')}
+          ${history.map(b => `<tr><td>${esc(formatBookingTime(b.start_time, shop.timezone))}</td><td>${esc(b.service_name || '')}</td><td>${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</td><td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td></tr>`).join('')}
         </table></div>` : '<p class="muted">No bookings yet.</p>'}
       </div>
     </div>

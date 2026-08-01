@@ -320,12 +320,16 @@ app.post('/:slug/book', async (c) => {
   // Save/refresh this person as a client so the shop can reselect them next time.
   const clientId = await findOrCreateClient(db, shop.id, { name, email, phone: (form.phone || '').toString() })
 
+  // If the customer picked a specific therapist (not "anyone available"), treat
+  // it as a request for that therapist.
+  const requestedStaff = (form.staff && form.staff.toString() !== 'any') ? 1 : 0
+
   await db.prepare(`INSERT INTO bookings
     (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
-     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(bookingId, shop.id, service.id, staffId, name, email, (form.phone || '').toString(),
-      startUnix, endUnix, status, service.price_cents, depositCents, service.name, staffRow?.name || '', (form.notes || '').toString(), c.get('lang') || 'en', clientId).run()
+      startUnix, endUnix, status, service.price_cents, depositCents, service.name, staffRow?.name || '', (form.notes || '').toString(), c.get('lang') || 'en', clientId, requestedStaff).run()
 
   // Payment required → Stripe Checkout
   if (status === 'pending_payment') {

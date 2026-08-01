@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   refunded_at INTEGER,
   reminder_sent_at INTEGER,       -- set once a day-before reminder email has gone out
   client_id TEXT,                 -- linked saved client (nullable)
+  requested_staff INTEGER NOT NULL DEFAULT 0,  -- client specifically requested this therapist (don't reassign)
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,
   FOREIGN KEY (service_id) REFERENCES services(id),
