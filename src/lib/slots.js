@@ -36,16 +36,18 @@ export function getAvailableDates(availability, tz, daysAhead = 60) {
   return dates
 }
 
-// Generate time slots for a specific date given host availability and existing bookings
-export function generateSlots(avail, existingBookings, dateStr, durationMin, tz) {
+// Generate time slots for a specific date given host availability and existing
+// bookings. `stepMin` is how far apart offered start times are (e.g. 5, 15, 60).
+export function generateSlots(avail, existingBookings, dateStr, durationMin, tz, stepMin = 15) {
   const [startH, startM] = avail.start_time.split(':').map(Number)
   const [endH, endM] = avail.end_time.split(':').map(Number)
   const startMin = startH * 60 + startM
   const endMin = endH * 60 + endM
+  const step = Math.max(5, Number(stepMin) || 15)
   const nowMs = Date.now() + 30 * 60000 // 30 min booking lead time
 
   const slots = []
-  for (let cur = startMin; cur + durationMin <= endMin; cur += durationMin) {
+  for (let cur = startMin; cur + durationMin <= endMin; cur += step) {
     const h = Math.floor(cur / 60)
     const m = cur % 60
     const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`

@@ -3,6 +3,7 @@ import { layout, money, esc } from '../lib/views.js'
 import { genId } from '../lib/auth.js'
 import { formatBookingTime, dateTzString, localToUtcMs } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
+import { sendCancellationEmail } from '../lib/email.js'
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -274,6 +275,9 @@ async function bookingAction(c, action) {
       } catch (e) { console.error('refund failed:', e.message) }
     }
     await db.prepare("UPDATE bookings SET status='cancelled' WHERE id=?").bind(id).run()
+    // Tell the customer (localized), noting the refund if one was issued. Non-blocking.
+    const emailP = sendCancellationEmail(c.env, id)
+    if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(emailP); else await emailP
   }
   return c.redirect('/dashboard/bookings')
 }
@@ -375,8 +379,8 @@ app.get('/staff', async (c) => {
           const h = hByDow[i]
           return `<tr><td><strong>${d}</strong></td>
             <td><input type="checkbox" name="on_${i}" ${h ? 'checked' : ''} style="width:auto"></td>
-            <td><input type="time" name="start_${i}" value="${h?.start_time || '09:00'}" style="max-width:130px"></td>
-            <td><input type="time" name="end_${i}" value="${h?.end_time || '18:00'}" style="max-width:130px"></td></tr>`
+            <td><input type="time" name="start_${i}" step="300" value="${h?.start_time || '09:00'}" style="max-width:130px"></td>
+            <td><input type="time" name="end_${i}" step="300" value="${h?.end_time || '18:00'}" style="max-width:130px"></td></tr>`
         }).join('')}</table>
         <button class="btn sm">Save hours</button>
       </form>
@@ -495,8 +499,10 @@ app.get('/settings', async (c) => {
         <div class="row">
           <div class="field"><label>Deposit (% of price)</label><input type="number" name="deposit_pct" value="${f('deposit_pct', 20)}" min="0" max="100"></div>
           <div class="field"><label>Free cancellation window (hours)</label><input type="number" name="cancellation_hours" value="${f('cancellation_hours', 24)}" min="0"></div>
+          <div class="field"><label>Booking time interval</label>
+            <select name="slot_interval_minutes">${[5, 10, 15, 20, 30, 60].map(m => `<option value="${m}" ${Number(shop.slot_interval_minutes || 15) === m ? 'selected' : ''}>Every ${m} minutes</option>`).join('')}</select></div>
         </div>
-        <p class="muted" style="font-size:.82rem;margin:0">Set deposit to 0% to take bookings with no upfront payment.</p>
+        <p class="muted" style="font-size:.82rem;margin:0">Set deposit to 0% to take bookings with no upfront payment. <strong>Booking time interval</strong> controls how far apart the offered start times are — choose 5 minutes for the finest control.</p>
       </div>
       <button class="btn">Save settings</button>
     </form>
@@ -513,13 +519,14 @@ app.post('/settings', async (c) => {
   const clash = await db.prepare('SELECT id FROM shops WHERE slug = ? AND id != ?').bind(slug, shop.id).first()
   if (clash) slug = `${slug}-${shop.id.slice(0, 4)}`
 
+  const interval = [5, 10, 15, 20, 30, 60].includes(parseInt(f.slot_interval_minutes)) ? parseInt(f.slot_interval_minutes) : 15
   await db.prepare(`UPDATE shops SET name=?, emoji=?, tagline=?, about=?, slug=?, accent=?, phone=?, email=?,
-    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=? WHERE id=?`)
+    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=? WHERE id=?`)
     .bind((f.name || shop.name).toString().trim(), (f.emoji || '💆').toString().trim() || '💆',
       (f.tagline || '').toString(), (f.about || '').toString(), slug, (f.accent || '#0f766e').toString(),
       (f.phone || '').toString(), (f.email || '').toString(), (f.address || '').toString(),
       (f.suburb || '').toString(), (f.state || '').toString(), (f.postcode || '').toString(),
-      (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, shop.id).run()
+      (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, interval, shop.id).run()
   return c.redirect('/dashboard/settings')
 })
 

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS shops (
   currency TEXT NOT NULL DEFAULT 'aud',
   deposit_pct INTEGER NOT NULL DEFAULT 20,   -- % of service price taken as deposit
   cancellation_hours INTEGER NOT NULL DEFAULT 24,
+  slot_interval_minutes INTEGER NOT NULL DEFAULT 15,  -- spacing between bookable start times
   is_published INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
@@ -152,6 +153,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   stripe_payment_intent_id TEXT,
   stripe_charge_id TEXT,
   refunded_at INTEGER,
+  reminder_sent_at INTEGER,       -- set once a day-before reminder email has gone out
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,
   FOREIGN KEY (service_id) REFERENCES services(id),

@@ -44,8 +44,8 @@ export function scheduleCards(lang, staff, shop, sched, actionBase) {
           const h = hByDow[i]
           return `<tr><td><strong>${esc(d)}</strong></td>
             <td><input type="checkbox" name="on_${i}" ${h ? 'checked' : ''} style="width:auto"></td>
-            <td><input type="time" name="start_${i}" value="${h?.start_time || '09:00'}" style="max-width:130px"></td>
-            <td><input type="time" name="end_${i}" value="${h?.end_time || '18:00'}" style="max-width:130px"></td></tr>`
+            <td><input type="time" name="start_${i}" step="300" value="${h?.start_time || '09:00'}" style="max-width:130px"></td>
+            <td><input type="time" name="end_${i}" step="300" value="${h?.end_time || '18:00'}" style="max-width:130px"></td></tr>`
         }).join('')}</table>
         <button class="btn">${t(lang, 'th_save_hours')}</button>
       </form>

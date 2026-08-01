@@ -76,6 +76,9 @@ const DICT = {
     pro_fill: 'Please fill in every field (password 8+ characters).',
     email_subject: 'Booking confirmed — {shop}', email_hi: 'Hi {name},', email_details: 'Booking details',
     email_questions: 'Questions or need to reschedule? Call {contact}.', email_view_booking: 'View your booking',
+    email_cancel_subject: 'Your booking at {shop} was cancelled', email_cancelled_head: 'Booking cancelled',
+    email_cancel_intro: 'The booking below has been cancelled.', email_refunded: 'Your {amount} deposit has been refunded to your card.',
+    email_reminder_subject: 'Reminder: your appointment at {shop}', email_reminder_head: 'See you soon 👋', email_reminder_intro: 'A friendly reminder about your upcoming appointment at {shop}.',
   },
   th: {
     dashboard: 'แดชบอร์ด', login: 'เข้าสู่ระบบ', signup: 'เริ่มใช้ฟรี',
@@ -134,6 +137,9 @@ const DICT = {
     pro_fill: 'กรุณากรอกทุกช่อง (รหัสผ่าน 8 ตัวอักษรขึ้นไป)',
     email_subject: 'ยืนยันการจองแล้ว — {shop}', email_hi: 'สวัสดีคุณ {name},', email_details: 'รายละเอียดการจอง',
     email_questions: 'มีคำถามหรือต้องการเลื่อนนัด? โทร {contact}', email_view_booking: 'ดูการจองของคุณ',
+    email_cancel_subject: 'การจองของคุณที่ {shop} ถูกยกเลิกแล้ว', email_cancelled_head: 'ยกเลิกการจองแล้ว',
+    email_cancel_intro: 'การจองด้านล่างถูกยกเลิกแล้ว', email_refunded: 'คืนเงินมัดจำ {amount} เข้าบัตรของคุณแล้ว',
+    email_reminder_subject: 'แจ้งเตือน: นัดหมายของคุณที่ {shop}', email_reminder_head: 'แล้วพบกันเร็ว ๆ นี้ 👋', email_reminder_intro: 'แจ้งเตือนนัดหมายที่กำลังจะมาถึงของคุณที่ {shop}',
   },
   zh: {
     dashboard: '仪表板', login: '登录', signup: '免费开始',
@@ -192,6 +198,9 @@ const DICT = {
     pro_fill: '请填写每一项（密码至少 8 位）。',
     email_subject: '预约已确认 — {shop}', email_hi: '你好 {name}，', email_details: '预约详情',
     email_questions: '有疑问或需要改期？请致电 {contact}。', email_view_booking: '查看你的预约',
+    email_cancel_subject: '您在 {shop} 的预约已取消', email_cancelled_head: '预约已取消',
+    email_cancel_intro: '以下预约已被取消。', email_refunded: '您的 {amount} 定金已退回到您的卡。',
+    email_reminder_subject: '提醒：您在 {shop} 的预约', email_reminder_head: '期待见到您 👋', email_reminder_intro: '友情提醒您在 {shop} 即将到来的预约。',
   },
   vi: {
     dashboard: 'Bảng điều khiển', login: 'Đăng nhập', signup: 'Bắt đầu miễn phí',
@@ -250,6 +259,9 @@ const DICT = {
     pro_fill: 'Vui lòng điền mọi trường (mật khẩu từ 8 ký tự).',
     email_subject: 'Đặt lịch đã xác nhận — {shop}', email_hi: 'Chào {name},', email_details: 'Chi tiết đặt lịch',
     email_questions: 'Có câu hỏi hoặc cần đổi lịch? Gọi {contact}.', email_view_booking: 'Xem lịch hẹn của bạn',
+    email_cancel_subject: 'Lịch hẹn của bạn tại {shop} đã bị hủy', email_cancelled_head: 'Đã hủy lịch hẹn',
+    email_cancel_intro: 'Lịch hẹn dưới đây đã bị hủy.', email_refunded: 'Tiền cọc {amount} của bạn đã được hoàn về thẻ.',
+    email_reminder_subject: 'Nhắc nhở: lịch hẹn của bạn tại {shop}', email_reminder_head: 'Hẹn sớm gặp bạn 👋', email_reminder_intro: 'Nhắc nhở thân thiện về lịch hẹn sắp tới của bạn tại {shop}.',
   },
   ko: {
     dashboard: '대시보드', login: '로그인', signup: '무료로 시작',
@@ -308,6 +320,9 @@ const DICT = {
     pro_fill: '모든 항목을 입력하세요 (비밀번호 8자 이상).',
     email_subject: '예약 확정 — {shop}', email_hi: '{name}님, 안녕하세요.', email_details: '예약 상세',
     email_questions: '문의 또는 일정 변경이 필요하세요? {contact}(으)로 전화하세요.', email_view_booking: '내 예약 보기',
+    email_cancel_subject: '{shop} 예약이 취소되었습니다', email_cancelled_head: '예약 취소됨',
+    email_cancel_intro: '아래 예약이 취소되었습니다.', email_refunded: '{amount} 예약금이 카드로 환불되었습니다.',
+    email_reminder_subject: '알림: {shop} 예약', email_reminder_head: '곧 뵙겠습니다 👋', email_reminder_intro: '{shop}의 다가오는 예약을 알려드립니다.',
   },
   ja: {
     dashboard: 'ダッシュボード', login: 'ログイン', signup: '無料で始める',
@@ -366,6 +381,9 @@ const DICT = {
     pro_fill: 'すべての項目を入力してください（パスワードは8文字以上）。',
     email_subject: '予約確定 — {shop}', email_hi: '{name} 様、', email_details: 'ご予約の詳細',
     email_questions: 'ご質問・日程変更は {contact} までお電話ください。', email_view_booking: 'ご予約を確認する',
+    email_cancel_subject: '{shop} のご予約がキャンセルされました', email_cancelled_head: 'ご予約キャンセル',
+    email_cancel_intro: '以下のご予約はキャンセルされました。', email_refunded: '{amount} の手付金をカードへ返金しました。',
+    email_reminder_subject: 'リマインダー：{shop} のご予約', email_reminder_head: 'お会いできるのを楽しみにしています 👋', email_reminder_intro: '{shop} での次回のご予約のリマインダーです。',
   },
 }
 

@@ -42,7 +42,7 @@ export async function slotsForDate(db, shop, service, staffId, dateStr) {
       `SELECT start_time, end_time FROM bookings
        WHERE staff_id = ? AND status IN ('pending_payment','confirmed','completed')
        AND start_time BETWEEN ? AND ?`).bind(st.id, dayStart, dayEnd).all()
-    const slots = generateSlots(avail, booked.results || [], dateStr, service.duration_minutes, shop.timezone)
+    const slots = generateSlots(avail, booked.results || [], dateStr, service.duration_minutes, shop.timezone, shop.slot_interval_minutes)
     for (const s of slots) {
       if (!byTime.has(s.time)) byTime.set(s.time, { ...s, staffIds: [] })
       byTime.get(s.time).staffIds.push(st.id)

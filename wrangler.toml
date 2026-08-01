@@ -24,6 +24,11 @@ custom_domain = true
 pattern = "kneadly.theradicalparty.com"
 custom_domain = true
 
+# Daily reminder run at 22:00 UTC (~08:00 AEST) — emails customers whose
+# confirmed appointment is ~1 day away (runReminders in src/lib/email.js).
+[triggers]
+crons = ["0 22 * * *"]
+
 [vars]
 BASE_URL = "https://alisa.bored.investments"
 # Sender for transactional emails (Resend). bored.investments is a verified

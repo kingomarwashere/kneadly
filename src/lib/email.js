@@ -113,6 +113,101 @@ export function ownerNotificationEmail({ shop, b, base }) {
   return { subject: `New booking: ${b.service_name} — ${when}`, html: shell(accent, shop.emoji, shop.name, inner), text }
 }
 
+// Localized cancellation (with refund note) for the customer.
+export function cancellationEmail(lang, { shop, b, base }) {
+  const accent = shop.accent || '#0f766e'
+  const when = formatBookingTime(b.start_time, shop.timezone)
+  const refunded = b.deposit_cents > 0 && b.refunded_at
+  const rows = [
+    detailRow(t(lang, 'c_service'), b.service_name || ''),
+    detailRow(t(lang, 'c_when'), when),
+  ].join('')
+  const contact = shop.phone || shop.name
+  const inner = `
+    <h1 style="font-size:20px;margin:0 0 6px">🚫 ${safe(t(lang, 'email_cancelled_head'))}</h1>
+    <p style="color:#6b7c7a;font-size:14px;margin:0 0 4px">${safe(t(lang, 'email_hi', { name: b.customer_name }))}</p>
+    <p style="color:#6b7c7a;font-size:14px;margin:0 0 16px">${safe(t(lang, 'email_cancel_intro'))}</p>
+    <table style="width:100%;border-collapse:collapse">${rows}</table>
+    ${refunded ? `<p style="color:#2f8a5b;font-size:14px;margin:16px 0 0">💳 ${safe(t(lang, 'email_refunded', { amount: money(b.deposit_cents, shop.currency) }))}</p>` : ''}
+    <div style="margin-top:22px"><a href="${safe(base)}/${safe(shop.slug)}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:999px">${safe(shop.name)} →</a></div>
+    <p style="color:#6b7c7a;font-size:13px;margin:18px 0 0">${safe(t(lang, 'email_questions', { contact }))}</p>`
+  const text = `${t(lang, 'email_cancelled_head')}\n${t(lang, 'email_cancel_intro')}\n\n`
+    + `${t(lang, 'c_service')}: ${b.service_name}\n${t(lang, 'c_when')}: ${when}\n`
+    + (refunded ? `\n${t(lang, 'email_refunded', { amount: money(b.deposit_cents, shop.currency) })}\n` : '')
+    + `\n${base}/${shop.slug}`
+  return { subject: t(lang, 'email_cancel_subject', { shop: shop.name }), html: shell(accent, shop.emoji, shop.name, inner), text }
+}
+
+// Localized day-before reminder for the customer.
+export function reminderEmail(lang, { shop, b, base }) {
+  const accent = shop.accent || '#0f766e'
+  const when = formatBookingTime(b.start_time, shop.timezone)
+  const rows = [
+    detailRow(t(lang, 'c_service'), b.service_name || ''),
+    detailRow(t(lang, 'c_therapist'), b.staff_name || t(lang, 'our_team')),
+    detailRow(t(lang, 'c_when'), when),
+  ].join('')
+  const url = `${base}/${shop.slug}/booked/${b.id}`
+  const contact = shop.phone || shop.name
+  const inner = `
+    <h1 style="font-size:20px;margin:0 0 6px">⏰ ${safe(t(lang, 'email_reminder_head'))}</h1>
+    <p style="color:#6b7c7a;font-size:14px;margin:0 0 4px">${safe(t(lang, 'email_hi', { name: b.customer_name }))}</p>
+    <p style="color:#6b7c7a;font-size:14px;margin:0 0 16px">${safe(t(lang, 'email_reminder_intro', { shop: shop.name }))}</p>
+    <table style="width:100%;border-collapse:collapse">${rows}</table>
+    <div style="margin-top:22px"><a href="${safe(url)}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:999px">${safe(t(lang, 'email_view_booking'))} →</a></div>
+    <p style="color:#6b7c7a;font-size:13px;margin:18px 0 0">${safe(t(lang, 'email_questions', { contact }))}</p>`
+  const text = `${t(lang, 'email_reminder_head')}\n${t(lang, 'email_reminder_intro', { shop: shop.name })}\n\n`
+    + `${t(lang, 'c_service')}: ${b.service_name}\n${t(lang, 'c_therapist')}: ${b.staff_name || t(lang, 'our_team')}\n${t(lang, 'c_when')}: ${when}\n`
+    + `\n${url}\n${t(lang, 'email_questions', { contact })}`
+  return { subject: t(lang, 'email_reminder_subject', { shop: shop.name }), html: shell(accent, shop.emoji, shop.name, inner), text }
+}
+
+// Email the customer that their booking was cancelled (best-effort).
+export async function sendCancellationEmail(env, bookingId) {
+  try {
+    const db = env.DB
+    const b = await db.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first()
+    if (!b || b.status !== 'cancelled' || !b.customer_email) return
+    const shop = await db.prepare('SELECT * FROM shops WHERE id = ?').bind(b.shop_id).first()
+    if (!shop) return
+    const base = env.BASE_URL || 'https://alisa.bored.investments'
+    const m = cancellationEmail(b.lang || 'en', { shop, b, base })
+    const r = await sendEmail(env, { to: b.customer_email, subject: m.subject, html: m.html, text: m.text, replyTo: shop.email || undefined })
+    if (!r.ok) console.error('cancellation email failed:', r.error)
+  } catch (e) {
+    console.error('sendCancellationEmail failed:', String(e))
+  }
+}
+
+// Cron entrypoint: send day-before reminders for confirmed bookings ~1 day out
+// that haven't been reminded. reminder_sent_at guards against duplicates.
+export async function runReminders(env) {
+  try {
+    const db = env.DB
+    const now = Math.floor(Date.now() / 1000)
+    const rows = (await db.prepare(
+      `SELECT * FROM bookings WHERE status = 'confirmed' AND reminder_sent_at IS NULL
+       AND start_time > ? AND start_time < ?`
+    ).bind(now + 3600, now + 34 * 3600).all()).results || []
+    const base = env.BASE_URL || 'https://alisa.bored.investments'
+    let sent = 0
+    for (const b of rows) {
+      const shop = await db.prepare('SELECT * FROM shops WHERE id = ?').bind(b.shop_id).first()
+      if (shop && b.customer_email) {
+        const m = reminderEmail(b.lang || 'en', { shop, b, base })
+        const r = await sendEmail(env, { to: b.customer_email, subject: m.subject, html: m.html, text: m.text, replyTo: shop.email || undefined })
+        if (r.ok) sent++; else console.error('reminder email failed:', r.error)
+      }
+      await db.prepare('UPDATE bookings SET reminder_sent_at = ? WHERE id = ?').bind(now, b.id).run()
+    }
+    console.log(`runReminders: ${rows.length} due, ${sent} sent`)
+    return sent
+  } catch (e) {
+    console.error('runReminders failed:', String(e))
+    return 0
+  }
+}
+
 // Load a confirmed booking and email both the customer (localized) and the shop
 // owner (English). Best-effort: swallows all errors.
 export async function sendBookingEmails(env, bookingId) {

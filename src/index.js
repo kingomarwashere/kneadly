@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { getSession } from './lib/auth.js'
 import { resolveLang } from './lib/i18n.js'
+import { runReminders } from './lib/email.js'
 import authRoutes from './routes/auth.js'
 import dashboardRoutes from './routes/dashboard.js'
 import apiRoutes from './routes/api.js'
@@ -93,4 +94,10 @@ app.route('/t', therapistRoutes)   // therapist self-service (secret token links
 app.route('/pro', proRoutes)       // therapist login accounts (multi-shop)
 app.route('/', publicRoutes)   // shop pages + booking flow live at the root, keep last
 
-export default app
+// Cron: send day-before appointment reminders (see wrangler.toml [triggers]).
+export default {
+  fetch: app.fetch,
+  scheduled(event, env, ctx) {
+    ctx.waitUntil(runReminders(env))
+  },
+}
