@@ -113,6 +113,72 @@ export function ownerNotificationEmail({ shop, b, base }) {
   return { subject: `New booking: ${b.service_name} — ${when}`, html: shell(accent, shop.emoji, shop.name, inner), text }
 }
 
+// Localized "how was your visit?" review request for the customer.
+export function reviewRequestEmail(lang, { shop, b, base }) {
+  const accent = shop.accent || '#0f766e'
+  const url = `${base}/${shop.slug}/review/${b.id}`
+  const inner = `
+    <h1 style="font-size:20px;margin:0 0 6px">⭐ ${safe(t(lang, 'email_review_head'))}</h1>
+    <p style="color:#6b7c7a;font-size:14px;margin:0 0 4px">${safe(t(lang, 'email_hi', { name: b.customer_name }))}</p>
+    <p style="color:#6b7c7a;font-size:14px;margin:0 0 18px">${safe(t(lang, 'email_review_intro', { shop: shop.name }))}</p>
+    <div><a href="${safe(url)}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;font-weight:600;padding:12px 24px;border-radius:999px">${safe(t(lang, 'email_review_btn'))} ★</a></div>`
+  const text = `${t(lang, 'email_review_head')}\n${t(lang, 'email_review_intro', { shop: shop.name })}\n\n${t(lang, 'email_review_btn')}: ${url}`
+  return { subject: t(lang, 'email_review_subject', { shop: shop.name }), html: shell(accent, shop.emoji, shop.name, inner), text }
+}
+
+// Ask the customer for a review after their visit (best-effort).
+export async function sendReviewRequest(env, bookingId) {
+  try {
+    const db = env.DB
+    const b = await db.prepare('SELECT * FROM bookings WHERE id=?').bind(bookingId).first()
+    if (!b || !b.customer_email) return
+    // Don't ask twice.
+    const existing = await db.prepare('SELECT id FROM reviews WHERE booking_id=?').bind(bookingId).first()
+    if (existing) return
+    const shop = await db.prepare('SELECT * FROM shops WHERE id=?').bind(b.shop_id).first()
+    if (!shop) return
+    const base = env.BASE_URL || 'https://alisa.bored.investments'
+    const m = reviewRequestEmail(b.lang || 'en', { shop, b, base })
+    const r = await sendEmail(env, { to: b.customer_email, subject: m.subject, html: m.html, text: m.text, replyTo: shop.email || undefined })
+    if (!r.ok) console.error('review request failed:', r.error)
+  } catch (e) {
+    console.error('sendReviewRequest failed:', String(e))
+  }
+}
+
+// Invite a therapist the owner just added (English — therapist's lang unknown).
+export function therapistInviteEmail({ shop, staff, base }) {
+  const accent = shop.accent || '#0f766e'
+  const linkUrl = `${base}/t/${staff.token}`
+  const accountUrl = `${base}/pro/signup?claim=${staff.token}`
+  const inner = `
+    <h1 style="font-size:20px;margin:0 0 6px">👋 You've been added to ${safe(shop.name)}</h1>
+    <p style="color:#6b7c7a;font-size:14px;margin:0 0 16px">Hi ${safe(staff.name.split(' ')[0])}, <strong>${safe(shop.name)}</strong> added you as a therapist on Alisa. Set your own working hours and days off from your private scheduling link:</p>
+    <div><a href="${safe(linkUrl)}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:999px">Open my schedule →</a></div>
+    <p style="color:#6b7c7a;font-size:14px;margin:20px 0 8px">Work at more than one shop? Create one login to manage them all in one place:</p>
+    <div><a href="${safe(accountUrl)}" style="display:inline-block;background:#fff;color:${accent};border:1px solid ${accent};text-decoration:none;font-weight:600;padding:11px 20px;border-radius:999px">Create my therapist account →</a></div>
+    <p style="color:#9aa3b5;font-size:12px;margin:20px 0 0">🔒 Keep your scheduling link private — anyone with it can change your hours.</p>`
+  const text = `You've been added to ${shop.name} on Alisa.\n\n`
+    + `Set your hours & days off: ${linkUrl}\n\nWork at more than one shop? Create one login: ${accountUrl}\n\nKeep your link private.`
+  return { subject: `You've been added to ${shop.name} on Alisa`, html: shell(accent, shop.emoji, shop.name, inner), text }
+}
+
+export async function sendTherapistInvite(env, staffId) {
+  try {
+    const db = env.DB
+    const staff = await db.prepare('SELECT * FROM staff WHERE id=?').bind(staffId).first()
+    if (!staff || !staff.email) return
+    const shop = await db.prepare('SELECT * FROM shops WHERE id=?').bind(staff.shop_id).first()
+    if (!shop) return
+    const base = env.BASE_URL || 'https://alisa.bored.investments'
+    const m = therapistInviteEmail({ shop, staff, base })
+    const r = await sendEmail(env, { to: staff.email, subject: m.subject, html: m.html, text: m.text, replyTo: shop.email || undefined })
+    if (!r.ok) console.error('therapist invite failed:', r.error)
+  } catch (e) {
+    console.error('sendTherapistInvite failed:', String(e))
+  }
+}
+
 // Localized cancellation (with refund note) for the customer.
 export function cancellationEmail(lang, { shop, b, base }) {
   const accent = shop.accent || '#0f766e'

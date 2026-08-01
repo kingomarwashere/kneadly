@@ -80,6 +80,7 @@ const DICT = {
     email_cancel_intro: 'The booking below has been cancelled.', email_refunded: 'Your {amount} deposit has been refunded to your card.',
     email_reminder_subject: 'Reminder: your appointment at {shop}', email_reminder_head: 'See you soon 👋', email_reminder_intro: 'A friendly reminder about your upcoming appointment at {shop}.',
     email_reschedule_subject: 'Your appointment at {shop} has been moved', email_rescheduled_head: 'Appointment rescheduled', email_reschedule_intro: 'Your appointment has been moved to a new time — the updated details are below.',
+    review_title: 'How was your visit?', review_sub: 'Your feedback helps {shop} improve.', review_rating: 'Your rating', review_comment: 'Tell us more (optional)', review_submit: 'Submit review', review_pick: 'Please pick a rating.', review_thanks_head: 'Thank you! 🙏', review_thanks_sub: 'We really appreciate your feedback.', review_google_cta: 'Loved your visit? Share it on Google.', review_google_btn: 'Leave a Google review →', review_already: 'You’ve already reviewed this visit — thank you!', email_review_subject: 'How was your visit to {shop}?', email_review_head: 'How did we do?', email_review_intro: 'Thanks for visiting {shop}! We’d love a quick review of your appointment.', email_review_btn: 'Leave a review',
   },
   th: {
     dashboard: 'แดชบอร์ด', login: 'เข้าสู่ระบบ', signup: 'เริ่มใช้ฟรี',
@@ -142,6 +143,7 @@ const DICT = {
     email_cancel_intro: 'การจองด้านล่างถูกยกเลิกแล้ว', email_refunded: 'คืนเงินมัดจำ {amount} เข้าบัตรของคุณแล้ว',
     email_reminder_subject: 'แจ้งเตือน: นัดหมายของคุณที่ {shop}', email_reminder_head: 'แล้วพบกันเร็ว ๆ นี้ 👋', email_reminder_intro: 'แจ้งเตือนนัดหมายที่กำลังจะมาถึงของคุณที่ {shop}',
     email_reschedule_subject: 'นัดหมายของคุณที่ {shop} ถูกเลื่อนแล้ว', email_rescheduled_head: 'เลื่อนนัดหมายแล้ว', email_reschedule_intro: 'นัดหมายของคุณถูกเลื่อนไปเป็นเวลาใหม่ — รายละเอียดที่อัปเดตอยู่ด้านล่าง',
+    review_title: 'การมาใช้บริการเป็นอย่างไรบ้าง?', review_sub: 'ความคิดเห็นของคุณช่วยให้ {shop} พัฒนาได้', review_rating: 'ให้คะแนน', review_comment: 'บอกเราเพิ่มเติม (ไม่บังคับ)', review_submit: 'ส่งรีวิว', review_pick: 'กรุณาเลือกคะแนน', review_thanks_head: 'ขอบคุณ! 🙏', review_thanks_sub: 'เราซาบซึ้งในความคิดเห็นของคุณมาก', review_google_cta: 'ประทับใจไหม? แชร์บน Google ได้เลย', review_google_btn: 'เขียนรีวิวบน Google →', review_already: 'คุณได้รีวิวการเข้าใช้บริการนี้แล้ว — ขอบคุณ!', email_review_subject: 'การมาใช้บริการที่ {shop} เป็นอย่างไรบ้าง?', email_review_head: 'เราทำได้ดีแค่ไหน?', email_review_intro: 'ขอบคุณที่มาใช้บริการที่ {shop}! เราอยากให้คุณช่วยรีวิวการนัดหมายสั้น ๆ', email_review_btn: 'เขียนรีวิว',
   },
   zh: {
     dashboard: '仪表板', login: '登录', signup: '免费开始',
@@ -204,6 +206,7 @@ const DICT = {
     email_cancel_intro: '以下预约已被取消。', email_refunded: '您的 {amount} 定金已退回到您的卡。',
     email_reminder_subject: '提醒：您在 {shop} 的预约', email_reminder_head: '期待见到您 👋', email_reminder_intro: '友情提醒您在 {shop} 即将到来的预约。',
     email_reschedule_subject: '您在 {shop} 的预约已改期', email_rescheduled_head: '预约已改期', email_reschedule_intro: '您的预约已改到新的时间——更新后的详情如下。',
+    review_title: '这次体验如何？', review_sub: '您的反馈能帮助 {shop} 改进。', review_rating: '您的评分', review_comment: '告诉我们更多（选填）', review_submit: '提交评价', review_pick: '请选择评分。', review_thanks_head: '谢谢！🙏', review_thanks_sub: '非常感谢您的反馈。', review_google_cta: '喜欢这次体验？在 Google 上分享吧。', review_google_btn: '在 Google 上评价 →', review_already: '您已评价过这次到访——谢谢！', email_review_subject: '您在 {shop} 的体验如何？', email_review_head: '我们做得怎么样？', email_review_intro: '感谢您光临 {shop}！我们希望您能简单评价一下这次预约。', email_review_btn: '撰写评价',
   },
   vi: {
     dashboard: 'Bảng điều khiển', login: 'Đăng nhập', signup: 'Bắt đầu miễn phí',
@@ -266,6 +269,7 @@ const DICT = {
     email_cancel_intro: 'Lịch hẹn dưới đây đã bị hủy.', email_refunded: 'Tiền cọc {amount} của bạn đã được hoàn về thẻ.',
     email_reminder_subject: 'Nhắc nhở: lịch hẹn của bạn tại {shop}', email_reminder_head: 'Hẹn sớm gặp bạn 👋', email_reminder_intro: 'Nhắc nhở thân thiện về lịch hẹn sắp tới của bạn tại {shop}.',
     email_reschedule_subject: 'Lịch hẹn của bạn tại {shop} đã được dời', email_rescheduled_head: 'Đã dời lịch hẹn', email_reschedule_intro: 'Lịch hẹn của bạn đã được dời sang giờ mới — chi tiết cập nhật bên dưới.',
+    review_title: 'Buổi hẹn của bạn thế nào?', review_sub: 'Phản hồi của bạn giúp {shop} cải thiện.', review_rating: 'Đánh giá của bạn', review_comment: 'Cho chúng tôi biết thêm (không bắt buộc)', review_submit: 'Gửi đánh giá', review_pick: 'Vui lòng chọn số sao.', review_thanks_head: 'Cảm ơn bạn! 🙏', review_thanks_sub: 'Chúng tôi rất trân trọng phản hồi của bạn.', review_google_cta: 'Hài lòng với buổi hẹn? Chia sẻ trên Google nhé.', review_google_btn: 'Đánh giá trên Google →', review_already: 'Bạn đã đánh giá buổi hẹn này rồi — cảm ơn bạn!', email_review_subject: 'Buổi hẹn của bạn tại {shop} thế nào?', email_review_head: 'Chúng tôi làm thế nào?', email_review_intro: 'Cảm ơn bạn đã ghé {shop}! Chúng tôi rất mong nhận được đánh giá ngắn về buổi hẹn.', email_review_btn: 'Viết đánh giá',
   },
   ko: {
     dashboard: '대시보드', login: '로그인', signup: '무료로 시작',
@@ -328,6 +332,7 @@ const DICT = {
     email_cancel_intro: '아래 예약이 취소되었습니다.', email_refunded: '{amount} 예약금이 카드로 환불되었습니다.',
     email_reminder_subject: '알림: {shop} 예약', email_reminder_head: '곧 뵙겠습니다 👋', email_reminder_intro: '{shop}의 다가오는 예약을 알려드립니다.',
     email_reschedule_subject: '{shop} 예약이 변경되었습니다', email_rescheduled_head: '예약 일정 변경됨', email_reschedule_intro: '예약이 새로운 시간으로 변경되었습니다 — 아래에서 변경된 내용을 확인하세요.',
+    review_title: '방문은 어떠셨나요?', review_sub: '여러분의 피드백은 {shop}의 개선에 도움이 됩니다.', review_rating: '별점', review_comment: '더 알려주세요 (선택)', review_submit: '리뷰 제출', review_pick: '별점을 선택해 주세요.', review_thanks_head: '감사합니다! 🙏', review_thanks_sub: '소중한 의견 진심으로 감사드립니다.', review_google_cta: '만족하셨나요? Google에 공유해 주세요.', review_google_btn: 'Google에 리뷰 남기기 →', review_already: '이미 이 방문에 대한 리뷰를 남기셨습니다 — 감사합니다!', email_review_subject: '{shop} 방문은 어떠셨나요?', email_review_head: '저희가 어땠나요?', email_review_intro: '{shop}을(를) 방문해 주셔서 감사합니다! 예약에 대한 간단한 리뷰를 남겨주세요.', email_review_btn: '리뷰 남기기',
   },
   ja: {
     dashboard: 'ダッシュボード', login: 'ログイン', signup: '無料で始める',
@@ -390,6 +395,7 @@ const DICT = {
     email_cancel_intro: '以下のご予約はキャンセルされました。', email_refunded: '{amount} の手付金をカードへ返金しました。',
     email_reminder_subject: 'リマインダー：{shop} のご予約', email_reminder_head: 'お会いできるのを楽しみにしています 👋', email_reminder_intro: '{shop} での次回のご予約のリマインダーです。',
     email_reschedule_subject: '{shop} のご予約が変更されました', email_rescheduled_head: 'ご予約の日程変更', email_reschedule_intro: 'ご予約が新しい時間に変更されました — 更新後の詳細は以下のとおりです。',
+    review_title: 'ご来店はいかがでしたか？', review_sub: 'いただいたご意見は {shop} の改善に役立ちます。', review_rating: '評価', review_comment: 'ご感想をお聞かせください（任意）', review_submit: 'レビューを送信', review_pick: '評価を選んでください。', review_thanks_head: 'ありがとうございます！🙏', review_thanks_sub: 'ご意見に心より感謝いたします。', review_google_cta: 'ご満足いただけましたか？Google でシェアしてください。', review_google_btn: 'Google にレビューを書く →', review_already: 'このご来店はすでにレビュー済みです — ありがとうございます！', email_review_subject: '{shop} のご来店はいかがでしたか？', email_review_head: 'いかがでしたか？', email_review_intro: '{shop} へのご来店ありがとうございます！ご予約について簡単なレビューをいただけますと幸いです。', email_review_btn: 'レビューを書く',
   },
 }
 
@@ -422,7 +428,7 @@ export function resolveLang(c) {
 
 // Compact <select> language switcher for the nav.
 export function langSwitcher(cur) {
-  return `<select class="langsel" aria-label="Language" onchange="var u=new URL(location);u.searchParams.set('lang',this.value);location=u.toString()">
+  return `<select class="langsel" aria-label="Language" onchange="var u=new URL(window.location.href);u.searchParams.set('lang',this.value);window.location.assign(u.toString());">
     ${LANGS.map(l => `<option value="${l.code}"${l.code === cur ? ' selected' : ''}>${l.flag} ${l.label}</option>`).join('')}
   </select>`
 }

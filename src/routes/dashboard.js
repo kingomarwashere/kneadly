@@ -3,7 +3,7 @@ import { layout, money, esc } from '../lib/views.js'
 import { genId } from '../lib/auth.js'
 import { formatBookingTime, dateTzString, localToUtcMs } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
-import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail } from '../lib/email.js'
+import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTherapistInvite, sendReviewRequest } from '../lib/email.js'
 import { findOrCreateClient } from '../lib/clients.js'
 
 const app = new Hono()
@@ -37,6 +37,7 @@ function shell(c, active, title, body, notice) {
       ${tab('roster', '📅 Roster')}
       ${tab('bookings', '🗓️ Bookings')}
       ${tab('clients', '👤 Clients')}
+      ${tab('reviews', '⭐ Reviews')}
       ${tab('services', '💆 Services')}
       ${tab('staff', '🧑‍⚕️ Therapists')}
       ${tab('settings', '⚙️ Settings')}
@@ -350,6 +351,8 @@ async function renderDayRoster(c) {
       bodies.forEach(body=>{ body.addEventListener('click',e=>{ if(e.target.closest('.dblock'))return; if(d)return;
         const r=body.getBoundingClientRect(); const mins=GRID_START+Math.round((e.clientY-r.top)/INTERVAL)*INTERVAL;
         location.href='/dashboard/bookings/new?date='+DATE+'&staff='+body.dataset.staff+'&start='+encodeURIComponent(fmt(mins)); }); });
+      // Auto-refresh so the front desk always sees the latest — but never mid-drag or on a hidden tab.
+      setInterval(()=>{ if(!d && !document.hidden) location.reload(); }, 60000);
     })();
     </script>
   `)
@@ -421,7 +424,12 @@ async function bookingAction(c, action) {
   const b = await db.prepare('SELECT * FROM bookings WHERE id = ? AND shop_id = ?').bind(id, shop.id).first()
   if (!b) return c.redirect('/dashboard/bookings')
 
-  if (action === 'complete') await db.prepare("UPDATE bookings SET status='completed' WHERE id=?").bind(id).run()
+  if (action === 'complete') {
+    await db.prepare("UPDATE bookings SET status='completed' WHERE id=?").bind(id).run()
+    // Ask the customer for a review (once). Non-blocking.
+    const p = sendReviewRequest(c.env, id)
+    if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
+  }
   if (action === 'no_show') await db.prepare("UPDATE bookings SET status='no_show' WHERE id=?").bind(id).run()
   if (action === 'cancel') {
     if (b.deposit_cents && b.stripe_charge_id && !b.refunded_at && c.env.STRIPE_SECRET_KEY) {
@@ -762,6 +770,9 @@ app.post('/staff', async (c) => {
   if (email) {
     const th = await db.prepare('SELECT id FROM therapists WHERE email = ?').bind(email).first()
     if (th) await db.prepare('UPDATE staff SET therapist_id = ? WHERE id = ?').bind(th.id, id).run()
+    // Email them their scheduling link + a prompt to create an account.
+    const p = sendTherapistInvite(c.env, id)
+    if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
   }
   // Default Mon–Sat 9–6 so they can be booked right away
   for (let dow = 1; dow <= 6; dow++)
@@ -777,13 +788,18 @@ app.post('/staff/:id/delete', async (c) => {
 
 app.post('/staff/:id/email', async (c) => {
   const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
-  const st = await db.prepare('SELECT id FROM staff WHERE id = ? AND shop_id = ?').bind(id, shop.id).first()
+  const st = await db.prepare('SELECT id, email FROM staff WHERE id = ? AND shop_id = ?').bind(id, shop.id).first()
   if (!st) return c.redirect('/dashboard/staff')
   const email = ((await c.req.parseBody()).email || '').toString().trim().toLowerCase()
   // Re-link to a matching therapist account if one exists (else leave unlinked
   // until the therapist signs up with this email).
   const th = email ? await db.prepare('SELECT id FROM therapists WHERE email = ?').bind(email).first() : null
   await db.prepare('UPDATE staff SET email = ?, therapist_id = ? WHERE id = ?').bind(email || null, th?.id || null, id).run()
+  // Invite them when a new email is set (not on every resave of the same one).
+  if (email && email !== (st.email || '')) {
+    const p = sendTherapistInvite(c.env, id)
+    if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
+  }
   return c.redirect('/dashboard/staff')
 })
 
@@ -847,6 +863,11 @@ app.get('/settings', async (c) => {
         </div>
         <p class="muted" style="font-size:.82rem;margin:0">Set deposit to 0% to take bookings with no upfront payment. <strong>Booking time interval</strong> controls how far apart the offered start times are — choose 5 minutes for the finest control.</p>
       </div>
+      <div class="card" style="padding:22px;margin-bottom:18px">
+        <h3 style="margin-top:0">Reviews</h3>
+        <div class="field"><label>Google review link</label><input name="google_review_url" value="${f('google_review_url')}" placeholder="https://g.page/r/…/review"></div>
+        <p class="muted" style="font-size:.82rem;margin:0">After a visit, clients are asked for a review (kept in <a href="/dashboard/reviews">Reviews</a>). Happy clients (4–5★) are then offered this Google link. Get it from your Google Business Profile → “Ask for reviews”.</p>
+      </div>
       <button class="btn">Save settings</button>
     </form>
   `)
@@ -864,13 +885,39 @@ app.post('/settings', async (c) => {
 
   const interval = [5, 10, 15, 20, 30, 60].includes(parseInt(f.slot_interval_minutes)) ? parseInt(f.slot_interval_minutes) : 15
   await db.prepare(`UPDATE shops SET name=?, emoji=?, tagline=?, about=?, slug=?, accent=?, phone=?, email=?,
-    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=? WHERE id=?`)
+    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, google_review_url=? WHERE id=?`)
     .bind((f.name || shop.name).toString().trim(), (f.emoji || '💆').toString().trim() || '💆',
       (f.tagline || '').toString(), (f.about || '').toString(), slug, (f.accent || '#0f766e').toString(),
       (f.phone || '').toString(), (f.email || '').toString(), (f.address || '').toString(),
       (f.suburb || '').toString(), (f.state || '').toString(), (f.postcode || '').toString(),
-      (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, interval, shop.id).run()
+      (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, interval, (f.google_review_url || '').toString().trim() || null, shop.id).run()
   return c.redirect('/dashboard/settings')
+})
+
+// ─── Reviews ─────────────────────────────────────────────────────────────────
+app.get('/reviews', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const rows = (await db.prepare('SELECT * FROM reviews WHERE shop_id=? ORDER BY created_at DESC LIMIT 300').bind(shop.id).all()).results || []
+  const agg = await db.prepare('SELECT COUNT(*) n, COALESCE(AVG(rating),0) avg FROM reviews WHERE shop_id=?').bind(shop.id).first()
+  const stars = (n) => `<span style="color:#e6a817;letter-spacing:1px">${'★'.repeat(n)}<span style="color:#d9d2c7">${'★'.repeat(5 - n)}</span></span>`
+  return shell(c, 'reviews', 'Reviews', `
+    <h2>Reviews</h2>
+    <div class="grid g3" style="margin-bottom:18px">
+      <div class="card" style="padding:18px"><div class="muted">Average</div><div class="stat">${agg.n ? (Math.round(agg.avg * 10) / 10).toFixed(1) : '—'} <span style="font-size:1rem;color:#e6a817">★</span></div></div>
+      <div class="card" style="padding:18px"><div class="muted">Total reviews</div><div class="stat">${agg.n}</div></div>
+      <div class="card" style="padding:18px"><div class="muted">Google link</div><div style="margin-top:6px">${shop.google_review_url ? '✅ set' : `<a href="/dashboard/settings">Add one</a>`}</div></div>
+    </div>
+    ${rows.length ? `<div class="card" style="padding:6px 18px"><table>
+      <tr><th>When</th><th>Rating</th><th>Client</th><th>Therapist</th><th>Comment</th></tr>
+      ${rows.map(r => `<tr>
+        <td>${esc(formatBookingTime(r.created_at, shop.timezone))}</td>
+        <td>${stars(r.rating)}</td>
+        <td>${esc(r.customer_name || '—')}</td>
+        <td>${esc(r.staff_name || '—')}</td>
+        <td class="muted" style="max-width:340px;white-space:pre-wrap">${esc(r.body || '')}</td>
+      </tr>`).join('')}
+    </table></div>` : '<p class="muted">No reviews yet — clients are asked for one after you mark their booking “Done”.</p>'}
+  `)
 })
 
 // ─── Clients (saved customers + notes) ───────────────────────────────────────

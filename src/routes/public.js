@@ -398,4 +398,78 @@ app.get('/:slug/booked/:id', async (c) => {
   `, { accent: shop.accent, lang }))
 })
 
+// ─── Reviews ─────────────────────────────────────────────────────────────────
+function reviewThanks(shop, review, lang, justSubmitted) {
+  const showGoogle = review.rating >= 4 && shop.google_review_url
+  return layout(`${t(lang, 'review_thanks_head')} — ${shop.name}`, `
+    ${siteNav(null, lang)}
+    <div class="wrap narrow" style="padding:50px 20px;text-align:center">
+      <div style="font-size:3rem">🙏</div>
+      <h2>${t(lang, 'review_thanks_head')}</h2>
+      <p class="muted">${justSubmitted ? t(lang, 'review_thanks_sub') : t(lang, 'review_already')}</p>
+      <div style="font-size:1.6rem;color:#e6a817;margin:6px 0;letter-spacing:2px">${'★'.repeat(review.rating)}<span style="color:#d9d2c7">${'★'.repeat(5 - review.rating)}</span></div>
+      ${showGoogle ? `<div class="card" style="padding:22px;margin-top:16px">
+        <p style="margin:0 0 12px">${t(lang, 'review_google_cta')}</p>
+        <a class="btn" href="${esc(shop.google_review_url)}" target="_blank" rel="noopener">${t(lang, 'review_google_btn')}</a>
+      </div>` : ''}
+      <div><a class="btn ghost" style="margin-top:14px" href="/${shop.slug}">${esc(shop.name)}</a></div>
+    </div>`, { lang, accent: shop.accent })
+}
+
+app.get('/:slug/review/:id', async (c) => {
+  const db = c.env.DB
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop) return c.notFound()
+  const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (!b) return c.notFound()
+  const lang = b.lang || c.get('lang')
+  const existing = await db.prepare('SELECT * FROM reviews WHERE booking_id=?').bind(b.id).first()
+  if (existing) return c.html(reviewThanks(shop, existing, lang, false))
+
+  return c.html(layout(`${t(lang, 'review_title')} — ${shop.name}`, `
+    ${siteNav(null, lang)}
+    <div class="wrap narrow" style="padding:40px 20px;text-align:center">
+      <div style="font-size:2.4rem">${esc(shop.emoji)}</div>
+      <h2>${t(lang, 'review_title')}</h2>
+      <p class="muted">${t(lang, 'review_sub', { shop: esc(shop.name) })}</p>
+      <form method="post" action="/${shop.slug}/review/${b.id}" class="card" style="padding:26px;text-align:left;margin-top:14px">
+        <div class="field"><label>${t(lang, 'review_rating')}</label>
+          <div id="stars" style="font-size:2.4rem;cursor:pointer;color:#d9d2c7;user-select:none;letter-spacing:4px">
+            ${[1, 2, 3, 4, 5].map(v => `<span data-v="${v}">★</span>`).join('')}
+          </div>
+          <input type="hidden" name="rating" id="rating" value="">
+        </div>
+        <div class="field"><label>${t(lang, 'review_comment')}</label><textarea name="body" rows="4"></textarea></div>
+        <button class="btn" style="width:100%">${t(lang, 'review_submit')}</button>
+      </form>
+    </div>
+    <script>
+    (function(){var stars=[].slice.call(document.querySelectorAll('#stars span')),inp=document.getElementById('rating');
+      function paint(n){stars.forEach(function(s){s.style.color=(+s.dataset.v<=n)?'#e6a817':'#d9d2c7';});}
+      stars.forEach(function(s){s.addEventListener('click',function(){inp.value=s.dataset.v;paint(+s.dataset.v);});
+        s.addEventListener('mouseenter',function(){paint(+s.dataset.v);});});
+      document.getElementById('stars').addEventListener('mouseleave',function(){paint(+inp.value||0);});
+      document.querySelector('form').addEventListener('submit',function(e){if(!inp.value){e.preventDefault();alert(${JSON.stringify(t(lang, 'review_pick'))});}});
+    })();
+    </script>`, { lang, accent: shop.accent }))
+})
+
+app.post('/:slug/review/:id', async (c) => {
+  const db = c.env.DB
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop) return c.notFound()
+  const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (!b) return c.notFound()
+  const lang = b.lang || c.get('lang')
+  const existing = await db.prepare('SELECT * FROM reviews WHERE booking_id=?').bind(b.id).first()
+  if (existing) return c.html(reviewThanks(shop, existing, lang, false))
+
+  const f = await c.req.parseBody()
+  const rating = Math.max(1, Math.min(5, parseInt(f.rating) || 0))
+  if (!f.rating) return c.redirect(`/${shop.slug}/review/${b.id}`)
+  await db.prepare('INSERT INTO reviews (id, shop_id, booking_id, client_id, staff_name, customer_name, rating, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(genId(), shop.id, b.id, b.client_id || null, b.staff_name || null, b.customer_name || null, rating, (f.body || '').toString().trim() || null).run()
+  return c.html(reviewThanks(shop, { rating }, lang, true))
+})
+
 export default app

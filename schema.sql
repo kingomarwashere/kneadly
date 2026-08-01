@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS shops (
   deposit_pct INTEGER NOT NULL DEFAULT 20,   -- % of service price taken as deposit
   cancellation_hours INTEGER NOT NULL DEFAULT 24,
   slot_interval_minutes INTEGER NOT NULL DEFAULT 15,  -- spacing between bookable start times
+  google_review_url TEXT,        -- shop's Google review link (for the review handoff)
   is_published INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
@@ -118,6 +119,24 @@ CREATE TABLE IF NOT EXISTS availability (
   UNIQUE(staff_id, day_of_week),
   FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
 );
+
+-- Reviews left by clients. Kept internally; high ratings are offered a Google
+-- review handoff (shops.google_review_url).
+CREATE TABLE IF NOT EXISTS reviews (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  booking_id TEXT,
+  client_id TEXT,
+  staff_name TEXT,
+  customer_name TEXT,
+  rating INTEGER NOT NULL,        -- 1..5
+  body TEXT,
+  shared_google INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_shop ON reviews(shop_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_reviews_booking ON reviews(booking_id);
 
 -- Saved clients per shop — so repeat walk-ins/callers are selected, not retyped.
 -- `notes` holds persistent notes the shop keeps on the client (insurance, prefs,
