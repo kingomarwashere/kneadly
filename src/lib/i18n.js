@@ -426,9 +426,16 @@ export function resolveLang(c) {
   return 'en'
 }
 
-// Compact <select> language switcher for the nav.
+// Language switcher for the nav. Pure anchor links inside a native <details>
+// dropdown — no JavaScript, so it works in every browser (incl. Brave with
+// shields up). Each link is relative (`?lang=xx`), which keeps the current path
+// and just sets the language; the cookie then persists it across the site.
 export function langSwitcher(cur) {
-  return `<select class="langsel" aria-label="Language" onchange="var u=new URL(window.location.href);u.searchParams.set('lang',this.value);window.location.assign(u.toString());">
-    ${LANGS.map(l => `<option value="${l.code}"${l.code === cur ? ' selected' : ''}>${l.flag} ${l.label}</option>`).join('')}
-  </select>`
+  const curLang = LANGS.find(l => l.code === cur) || LANGS[0]
+  return `<details class="langmenu">
+    <summary>🌐 ${curLang.flag} ${curLang.label}</summary>
+    <div class="langpop">
+      ${LANGS.map(l => `<a href="?lang=${l.code}"${l.code === cur ? ' class="on"' : ''}>${l.flag} ${l.label}</a>`).join('')}
+    </div>
+  </details>`
 }

@@ -46,7 +46,14 @@ label{display:block;font-size:.85rem;font-weight:600;margin:0 0 6px;color:var(--
 .nav{display:flex;align-items:center;justify-content:space-between;padding:18px 0}
 .brand{font-family:'Fraunces',serif;font-weight:600;font-size:1.4rem;color:var(--ink);display:flex;align-items:center;gap:8px}
 .brand:hover{text-decoration:none}
-.langsel{width:auto;padding:7px 10px;font-size:.85rem;border-radius:999px;background:#fff;color:var(--ink);border:1px solid var(--line);cursor:pointer}
+.langmenu{position:relative;display:inline-block}
+.langmenu>summary{list-style:none;cursor:pointer;padding:7px 12px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--ink);font-size:.85rem;white-space:nowrap}
+.langmenu>summary::-webkit-details-marker{display:none}
+.langmenu>summary::marker{content:''}
+.langpop{position:absolute;right:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:6px;z-index:60;min-width:150px}
+.langpop a{display:block;padding:8px 12px;border-radius:8px;color:var(--ink);text-decoration:none;font-size:.9rem;white-space:nowrap}
+.langpop a:hover{background:#f1ece5;text-decoration:none}
+.langpop a.on{background:var(--accent);color:#fff}
 .notice{padding:12px 16px;border-radius:12px;margin-bottom:16px;font-size:.9rem}
 .notice.err{background:#fbeae5;color:var(--danger)}
 .notice.ok{background:#e4f3ea;color:var(--ok)}

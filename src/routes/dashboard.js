@@ -482,12 +482,19 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
         <div class="field" style="flex:0 0 150px"><label>Price (${shop.currency.toUpperCase()})</label><input type="number" name="price" id="pr" min="0" step="1" value="${v.price != null ? v.price : ''}"></div>
       </div>
 
-      <div class="field"><label>Client</label>
-        <select id="clientsel">
-          <option value="">➕ New client / walk-in</option>
-          ${clients.map(cl => `<option value="${cl.id}" data-name="${esc(cl.name)}" data-email="${esc(cl.email || '')}" data-phone="${esc(cl.phone || '')}" data-notes="${esc(cl.notes || '')}" ${v.client_id === cl.id ? 'selected' : ''}>${esc(cl.name)}${cl.phone ? ` · ${esc(cl.phone)}` : ''}${cl.email ? ` · ${esc(cl.email)}` : ''}</option>`).join('')}
-        </select>
-        <p class="muted" style="font-size:.78rem;margin:4px 0 0">Pick a saved client to auto-fill their details, or leave as “New client”.</p>
+      <style>
+        .acwrap{position:relative}
+        .acmenu{position:absolute;left:0;right:0;top:100%;z-index:40;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);margin-top:4px;max-height:260px;overflow:auto}
+        .acitem{padding:9px 12px;cursor:pointer;font-size:.9rem;border-bottom:1px solid #f2efe9}
+        .acitem:last-child{border-bottom:none}
+        .acitem:hover,.acitem.sel{background:#f1ece5}
+        .acitem .acsub{color:var(--muted);font-size:.8rem}
+        .acnew{color:var(--accent-ink);font-weight:600}
+      </style>
+      <div class="field acwrap"><label>Client <span class="muted">(search saved by name or phone)</span></label>
+        <input type="text" id="clientsearch" autocomplete="off" placeholder="Type a name or phone number…" value="${v.client_id ? esc(v.customer_name || '') : ''}">
+        <div id="clientresults" class="acmenu" style="display:none"></div>
+        <p class="muted" style="font-size:.78rem;margin:4px 0 0">Reuse a saved client, or just fill the details below for a new one.</p>
       </div>
       <input type="hidden" name="client_id" id="client_id" value="${v.client_id || ''}">
       <div id="clientnotes" class="notice" style="display:none;background:#fdf7e8;color:#8a6414;white-space:pre-wrap"></div>
@@ -508,11 +515,26 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
     function fillEnd(){const o=svc.selectedOptions[0],d=o&&o.dataset.dur?+o.dataset.dur:0;if(!d||!st.value)return;const p=st.value.split(':').map(Number);let t=Math.min(p[0]*60+p[1]+d,23*60+55);et.value=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');}
     svc.addEventListener('change',()=>{fillEnd();const o=svc.selectedOptions[0];if(o&&o.dataset.price&&!pr.value)pr.value=(+o.dataset.price/100).toFixed(0);});
     st.addEventListener('change',fillEnd);
-    // Client picker: fill contact + show the client's saved notes.
-    const cs=document.getElementById('clientsel'),cid=document.getElementById('client_id'),cnb=document.getElementById('clientnotes'),cn=document.getElementById('cn'),ce=document.getElementById('ce'),cp=document.getElementById('cp');
-    function showNotes(o){if(o&&o.value&&o.dataset.notes){cnb.textContent='📋 '+o.dataset.notes;cnb.style.display='block';}else{cnb.style.display='none';}}
-    cs.addEventListener('change',()=>{const o=cs.selectedOptions[0];cid.value=o.value;if(o.value){cn.value=o.dataset.name||'';ce.value=o.dataset.email||'';cp.value=o.dataset.phone||'';}showNotes(o);});
-    showNotes(cs.selectedOptions[0]);
+    // Searchable client picker — filter saved clients by name / phone / email.
+    var CLIENTS=${JSON.stringify(clients.map(cl => ({ id: cl.id, name: cl.name, email: cl.email || '', phone: cl.phone || '', notes: cl.notes || '' })))};
+    var cs=document.getElementById('clientsearch'),cid=document.getElementById('client_id'),cres=document.getElementById('clientresults'),cnb=document.getElementById('clientnotes'),cn=document.getElementById('cn'),ce=document.getElementById('ce'),cp=document.getElementById('cp');
+    function acEsc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+    function showNotes(n){ if(n){cnb.textContent='📋 '+n;cnb.style.display='block';} else {cnb.style.display='none';} }
+    function pick(c){ cid.value=c.id; cs.value=c.name; cn.value=c.name; ce.value=c.email; cp.value=c.phone; showNotes(c.notes); cres.style.display='none'; }
+    function newClient(){ cid.value=''; showNotes(''); cres.style.display='none'; cn.focus(); }
+    function digits(s){return String(s).replace(/\\D/g,'');}
+    function search(){ var q=cs.value.trim().toLowerCase(), qd=digits(q);
+      var list = q ? CLIENTS.filter(function(c){ return c.name.toLowerCase().indexOf(q)>=0 || (qd && digits(c.phone).indexOf(qd)>=0) || (c.email && c.email.toLowerCase().indexOf(q)>=0); }) : [];
+      var html = list.slice(0,8).map(function(c,i){ return '<div class="acitem" data-i="'+i+'"><div>'+acEsc(c.name)+'</div><div class="acsub">'+[acEsc(c.phone),acEsc(c.email)].filter(Boolean).join(' · ')+'</div></div>'; }).join('');
+      html += '<div class="acitem acnew" data-new="1">➕ New client — use the details below</div>';
+      cres.innerHTML=html; cres._list=list; cres.style.display='block';
+    }
+    cs.addEventListener('input',function(){ cid.value=''; search(); });
+    cs.addEventListener('focus',search);
+    cres.addEventListener('mousedown',function(e){ var it=e.target.closest('.acitem'); if(!it)return; e.preventDefault(); if(it.dataset.new){newClient();} else {pick(cres._list[+it.dataset.i]);} });
+    document.addEventListener('click',function(e){ if(!cres.contains(e.target)&&e.target!==cs) cres.style.display='none'; });
+    // On an edit with a linked client, show their saved notes straight away.
+    (function(){ if(cid.value){ var c=CLIENTS.filter(function(x){return x.id===cid.value;})[0]; if(c) showNotes(c.notes); } })();
     </script>`
 }
 
