@@ -586,7 +586,13 @@ app.get('/bookings/new', async (c) => {
   if (!services.length) return shell(c, 'bookings', 'Add booking', `<h2>Add a booking</h2><p class="muted">Add a <a href="/dashboard/services">service</a> first — bookings attach to one (you can still set any custom time and label).</p>`)
 
   const clients = await clientsForShop(db, shop.id)
-  const v = { date, staff_id: c.req.query('staff') || staff[0].id, client_id: c.req.query('client') || '' }
+  const v = { date, staff_id: c.req.query('staff') || staff[0].id }
+  // Prefill the client (name/phone/email) when arriving from a client's "Book again".
+  const clientQ = c.req.query('client')
+  if (clientQ) {
+    const cl = await db.prepare('SELECT * FROM clients WHERE id=? AND shop_id=?').bind(clientQ, shop.id).first()
+    if (cl) { v.client_id = cl.id; v.customer_name = cl.name; v.customer_email = cl.email || ''; v.customer_phone = cl.phone || '' }
+  }
   const startQ = c.req.query('start')
   if (/^\d{1,2}:\d{2}$/.test(startQ || '')) {
     v.start = startQ
