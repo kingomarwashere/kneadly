@@ -128,8 +128,62 @@ app.get('/', async (c) => {
   `)
 })
 
-// ─── Roster (week calendar) ──────────────────────────────────────────────────
-app.get('/roster', async (c) => {
+// ─── Roster (day time-grid + week agenda) ────────────────────────────────────
+app.get('/roster', async (c) => (c.req.query('view') === 'week') ? renderWeekRoster(c) : renderDayRoster(c))
+
+const monOf = (date) => { const d = new Date(date + 'T12:00:00Z').getUTCDay(); return addDays(date, d === 0 ? -6 : 1 - d) }
+const minsOfDay = (unix, tz) => { const [h, m] = hm(unix, tz).split(':').map(Number); return h * 60 + m }
+const clockLabel = (mins) => { const h = Math.floor(mins / 60); return `${(h % 12) || 12} ${h < 12 ? 'am' : 'pm'}` }
+const vtoggle = (view, date, weekStart) => `<div class="inline" style="gap:0;border:1px solid var(--line);border-radius:999px;overflow:hidden">
+  <a class="vtab${view === 'day' ? ' on' : ''}" href="/dashboard/roster?view=day&date=${date}">Day</a>
+  <a class="vtab${view === 'week' ? ' on' : ''}" href="/dashboard/roster?view=week&week=${weekStart}">Week</a></div>`
+
+const ROSTER_CSS = `<style>
+  .vtab{padding:6px 14px;font-size:.85rem;color:var(--ink);text-decoration:none}
+  .vtab.on{background:var(--accent);color:#fff}
+  .rgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;overflow-x:auto;padding-bottom:6px}
+  .rcol{border:1px solid var(--line);border-radius:12px;min-width:150px;background:#fff;display:flex;flex-direction:column;overflow:hidden}
+  .rcol.today{border-color:var(--accent);box-shadow:0 0 0 2px rgba(15,118,110,.14)}
+  .rhead{padding:8px 10px;border-bottom:1px solid var(--line);font-weight:600;font-size:.82rem;display:flex;justify-content:space-between;align-items:baseline;color:var(--muted)}
+  .rcol.today .rhead{color:var(--accent-ink)}
+  .rhead span{font-family:'Fraunces',serif;font-size:1.15rem;color:var(--ink)}
+  .rwork{padding:8px 10px;border-bottom:1px dashed var(--line);display:flex;flex-direction:column;gap:4px;background:#fcfbf9}
+  .rcol a{text-decoration:none;color:inherit;display:block}
+  .wchip{font-size:.76rem;background:#eef4f3;border-radius:8px;padding:3px 8px;color:var(--accent-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+  .wchip:hover{background:#dcebe8}
+  .wchip.off{background:#faf1e6;color:#8a6414;cursor:default}
+  .whrs{color:var(--muted)}
+  .rbook{padding:8px 10px;display:flex;flex-direction:column;gap:6px;flex:1;min-height:60px}
+  .bk{font-size:.77rem;border-radius:8px;padding:5px 8px;border-left:3px solid var(--accent);background:#f5f8f8;line-height:1.3;cursor:pointer}
+  .bk:hover{filter:brightness(.97)}
+  .raddday{margin-top:auto;text-align:center;color:var(--muted);font-size:.74rem;padding:6px 0 2px;border-top:1px dashed var(--line)}
+  .raddday:hover{color:var(--accent)}
+  .bk.pending_payment,.dblock.pending_payment{border-left-color:#c9a227;background:#fdf7e8}
+  .bk.completed,.dblock.completed{border-left-color:#2f8a5b;background:#eef6f0}
+  .bk.no_show,.dblock.no_show{border-left-color:#c0492f;background:#fbeae5}
+  .bk.no_show{opacity:.75}
+  .bkmeta{color:var(--muted);font-size:.7rem}
+  .rnone{color:var(--muted);font-size:.74rem;padding:2px 0}
+  .dg{display:grid;border:1px solid var(--line);border-radius:12px;overflow:auto;background:#fff;max-height:76vh}
+  .dcolhead{padding:8px 10px;border-bottom:1px solid var(--line);border-left:1px solid var(--line);font-size:.82rem;font-weight:600;position:sticky;top:0;background:#fcfbf9;z-index:3;white-space:nowrap}
+  .dcolhead .whrs{color:var(--muted);font-weight:400;margin-left:4px}
+  .dcolhead.off{color:#8a6414}
+  .dg-corner{border-bottom:1px solid var(--line);position:sticky;top:0;left:0;background:#fcfbf9;z-index:4}
+  .dg-gutter{position:relative;background:#fcfbf9}
+  .hourlab{height:60px;font-size:.68rem;color:var(--muted);text-align:right;padding:2px 6px 0;box-sizing:border-box}
+  .dcolbody{position:relative;border-left:1px solid var(--line);cursor:copy;background:#fff}
+  .dcolbody.dropcol{background:#eef7f5}
+  .hrline{position:absolute;left:0;right:0;border-top:1px solid #f2efe9;pointer-events:none}
+  .workband{position:absolute;left:0;right:0;background:#f4faf8;pointer-events:none}
+  .offband{position:absolute;inset:0;background:repeating-linear-gradient(45deg,#faf1e6,#faf1e6 12px,#f6ead6 12px,#f6ead6 24px);color:#8a6414;display:flex;align-items:center;justify-content:center;font-size:.8rem;pointer-events:none}
+  .dblock{position:absolute;left:3px;right:3px;border-radius:8px;padding:3px 7px;font-size:.72rem;line-height:1.22;overflow:hidden;border-left:3px solid var(--accent);background:#eef4f3;cursor:grab;touch-action:none;z-index:1;box-shadow:0 1px 2px rgba(28,43,42,.08)}
+  .dblock:hover{filter:brightness(.97)}
+  .dblock.dragging{opacity:.9;cursor:grabbing;z-index:9;box-shadow:0 8px 20px rgba(28,43,42,.22)}
+  .dbtime{font-weight:700}
+  .dbsvc{color:var(--muted)}
+</style>`
+
+async function renderWeekRoster(c) {
   const db = c.env.DB, shop = c.get('shop'), tz = shop.timezone
 
   // Work out the Monday of the week being viewed.
@@ -190,43 +244,135 @@ app.get('/roster', async (c) => {
 
   const label = `${niceOff(days[0])} – ${niceOff(days[6])}`
   const nav = `<div class="inline" style="gap:8px">
-    <a class="btn ghost sm" href="/dashboard/roster?week=${addDays(weekStart, -7)}">← Prev</a>
-    <a class="btn ghost sm" href="/dashboard/roster">This week</a>
-    <a class="btn ghost sm" href="/dashboard/roster?week=${addDays(weekStart, 7)}">Next →</a>
+    <a class="btn ghost sm" href="/dashboard/roster?view=week&week=${addDays(weekStart, -7)}">← Prev</a>
+    <a class="btn ghost sm" href="/dashboard/roster?view=week&week=${thisMonday}">This week</a>
+    <a class="btn ghost sm" href="/dashboard/roster?view=week&week=${addDays(weekStart, 7)}">Next →</a>
   </div>`
 
   return shell(c, 'roster', 'Roster', `
-    <style>
-    .rgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;overflow-x:auto;padding-bottom:6px}
-    .rcol{border:1px solid var(--line);border-radius:12px;min-width:150px;background:#fff;display:flex;flex-direction:column;overflow:hidden}
-    .rcol.today{border-color:var(--accent);box-shadow:0 0 0 2px rgba(15,118,110,.14)}
-    .rhead{padding:8px 10px;border-bottom:1px solid var(--line);font-weight:600;font-size:.82rem;display:flex;justify-content:space-between;align-items:baseline;color:var(--muted)}
-    .rcol.today .rhead{color:var(--accent-ink)}
-    .rhead span{font-family:'Fraunces',serif;font-size:1.15rem;color:var(--ink)}
-    .rwork{padding:8px 10px;border-bottom:1px dashed var(--line);display:flex;flex-direction:column;gap:4px;background:#fcfbf9}
-    .rcol a{text-decoration:none;color:inherit;display:block}
-    .wchip{font-size:.76rem;background:#eef4f3;border-radius:8px;padding:3px 8px;color:var(--accent-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
-    .wchip:hover{background:#dcebe8}
-    .wchip.off{background:#faf1e6;color:#8a6414;cursor:default}
-    .whrs{color:var(--muted)}
-    .rbook{padding:8px 10px;display:flex;flex-direction:column;gap:6px;flex:1;min-height:60px}
-    .bk{font-size:.77rem;border-radius:8px;padding:5px 8px;border-left:3px solid var(--accent);background:#f5f8f8;line-height:1.3;cursor:pointer}
-    .bk:hover{filter:brightness(.97)}
-    .raddday{margin-top:auto;text-align:center;color:var(--muted);font-size:.74rem;padding:6px 0 2px;border-top:1px dashed var(--line)}
-    .raddday:hover{color:var(--accent)}
-    .bk.pending_payment{border-left-color:#c9a227;background:#fdf7e8}
-    .bk.completed{border-left-color:#2f8a5b;background:#eef6f0}
-    .bk.no_show{border-left-color:#c0492f;background:#fbeae5;opacity:.75}
-    .bkmeta{color:var(--muted);font-size:.7rem}
-    .rnone{color:var(--muted);font-size:.74rem;padding:2px 0}
-    </style>
+    ${ROSTER_CSS}
     <div class="inline" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
-      <div><h2 style="margin:0">Roster</h2><div class="muted">${label} · ${bookings.length} booking${bookings.length === 1 ? '' : 's'}</div></div>
+      <div class="inline" style="gap:12px"><h2 style="margin:0">Roster</h2>${vtoggle('week', today, weekStart)}</div>
       <div class="inline" style="gap:8px;flex-wrap:wrap"><a class="btn sm" href="/dashboard/bookings/new?date=${weekStart}">➕ Add booking</a>${nav}</div>
     </div>
-    <p class="muted" style="font-size:.82rem;margin:10px 0 14px">Green blocks are confirmed bookings, amber are awaiting deposit. 🌴 marks a therapist’s day off. Therapists set their own hours &amp; days off from their <a href="/dashboard/staff">private link</a>.</p>
+    <div class="muted" style="margin:6px 0 12px">${label} · ${bookings.length} booking${bookings.length === 1 ? '' : 's'}</div>
     <div class="rgrid">${cols}</div>
   `)
+}
+
+async function renderDayRoster(c) {
+  const db = c.env.DB, shop = c.get('shop'), tz = shop.timezone
+  const today = dateTzString(new Date(), tz)
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query('date') || '') ? c.req.query('date') : today
+  const dow = new Date(date + 'T12:00:00Z').getUTCDay()
+  const interval = Math.max(5, Number(shop.slot_interval_minutes) || 15)
+
+  const staff = (await db.prepare('SELECT id,name,emoji FROM staff WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  const avail = (await db.prepare('SELECT a.staff_id,a.start_time,a.end_time FROM availability a JOIN staff s ON s.id=a.staff_id WHERE s.shop_id=? AND a.day_of_week=?').bind(shop.id, dow).all()).results || []
+  const availByStaff = {}; for (const a of avail) availByStaff[a.staff_id] = a
+  const offIds = new Set(((await db.prepare('SELECT t.staff_id FROM time_off t JOIN staff s ON s.id=t.staff_id WHERE s.shop_id=? AND t.date=?').bind(shop.id, date).all()).results || []).map(o => o.staff_id))
+
+  const dayStartU = Math.floor(localToUtcMs(date, '00:00', tz) / 1000)
+  const bookings = (await db.prepare(`SELECT * FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? AND status!='cancelled' ORDER BY start_time`).bind(shop.id, dayStartU, dayStartU + 86400).all()).results || []
+  const bkByStaff = {}; for (const b of bookings) (bkByStaff[b.staff_id] ||= []).push(b)
+
+  // Grid time range: fit availability + any bookings, default 9–18, snapped to the hour.
+  const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m }
+  let lo = 9 * 60, hi = 18 * 60
+  for (const st of staff) { const a = availByStaff[st.id]; if (a && !offIds.has(st.id)) { lo = Math.min(lo, toMin(a.start_time)); hi = Math.max(hi, toMin(a.end_time)) } }
+  for (const b of bookings) { lo = Math.min(lo, minsOfDay(b.start_time, tz)); hi = Math.max(hi, minsOfDay(b.end_time, tz)) }
+  const gridStart = Math.max(0, Math.floor(lo / 60) * 60), gridEnd = Math.min(24 * 60, Math.ceil(hi / 60) * 60)
+  const H = gridEnd - gridStart   // 1px per minute
+
+  const hourLabels = []; for (let m = gridStart; m < gridEnd; m += 60) hourLabels.push(`<div class="hourlab">${clockLabel(m)}</div>`)
+  const hrlines = []; for (let m = gridStart; m <= gridEnd; m += 60) hrlines.push(`<div class="hrline" style="top:${m - gridStart}px"></div>`)
+
+  const cols = staff.map(st => {
+    const a = availByStaff[st.id], off = offIds.has(st.id)
+    const band = (a && !off) ? `<div class="workband" style="top:${toMin(a.start_time) - gridStart}px;height:${toMin(a.end_time) - toMin(a.start_time)}px"></div>` : ''
+    const offb = off ? `<div class="offband">🌴 Day off</div>` : ''
+    const blocks = (bkByStaff[st.id] || []).map(b => {
+      const s = minsOfDay(b.start_time, tz), e = minsOfDay(b.end_time, tz)
+      return `<div class="dblock ${b.status}" data-id="${b.id}" data-edit="/dashboard/bookings/${b.id}/edit" data-move="/dashboard/bookings/${b.id}/move" style="top:${s - gridStart}px;height:${Math.max(20, e - s)}px" title="Drag to move · click to edit">
+        <div class="dbtime">${timeOnly(b.start_time, tz)}</div><div class="dbname">${esc(b.customer_name)}</div><div class="dbsvc">${esc(b.service_name || '')}</div></div>`
+    }).join('')
+    const hrs = (a && !off) ? `<span class="whrs">${a.start_time}–${a.end_time}</span>` : `<span class="whrs">${off ? 'off' : 'closed'}</span>`
+    return {
+      head: `<div class="dcolhead${off ? ' off' : ''}">${esc(st.emoji)} ${esc(st.name.split(' ')[0])} ${hrs}</div>`,
+      body: `<div class="dcolbody" data-staff="${st.id}" style="height:${H}px">${band}${offb}${hrlines.join('')}${blocks}</div>`,
+    }
+  })
+
+  const nav = `<div class="inline" style="gap:8px">
+    <a class="btn ghost sm" href="/dashboard/roster?view=day&date=${addDays(date, -1)}">← Prev</a>
+    <a class="btn ghost sm" href="/dashboard/roster?view=day&date=${today}">Today</a>
+    <a class="btn ghost sm" href="/dashboard/roster?view=day&date=${addDays(date, 1)}">Next →</a></div>`
+  const heading = new Date(date + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' })
+  const n = staff.length
+
+  return shell(c, 'roster', 'Roster', `
+    ${ROSTER_CSS}
+    <div class="inline" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="inline" style="gap:12px"><h2 style="margin:0">Roster</h2>${vtoggle('day', date, monOf(date))}</div>
+      <div class="inline" style="gap:8px;flex-wrap:wrap"><a class="btn sm" href="/dashboard/bookings/new?date=${date}">➕ Add booking</a>${nav}</div>
+    </div>
+    <div class="muted" style="margin:6px 0 12px">${heading}${date === today ? ' · today' : ''} · ${bookings.length} booking${bookings.length === 1 ? '' : 's'} · <span style="font-size:.9em">drag a booking to reschedule · click a slot to add</span></div>
+    ${n ? `<div class="dg" style="grid-template-columns:52px repeat(${n},minmax(130px,1fr))">
+      <div class="dg-corner"></div>${cols.map(x => x.head).join('')}
+      <div class="dg-gutter" style="height:${H}px">${hourLabels.join('')}</div>${cols.map(x => x.body).join('')}
+    </div>` : '<p class="muted">Add a therapist to see the day grid.</p>'}
+    <script>
+    (function(){
+      const GRID_START=${gridStart}, INTERVAL=${interval}, DATE=${JSON.stringify(date)};
+      const bodies=[...document.querySelectorAll('.dcolbody')];
+      const colUnder=x=>{for(const b of bodies){const r=b.getBoundingClientRect();if(x>=r.left&&x<=r.right)return b;}return null;};
+      const fmt=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+      let d=null;
+      document.querySelectorAll('.dblock').forEach(el=>{
+        el.addEventListener('pointerdown',e=>{ if(e.button!==0)return; e.preventDefault();
+          d={el,moved:false,sx:e.clientX,sy:e.clientY,startTop:parseFloat(el.style.top)||0}; el.setPointerCapture(e.pointerId); });
+        el.addEventListener('pointermove',e=>{ if(!d||d.el!==el)return;
+          if(Math.abs(e.clientX-d.sx)>4||Math.abs(e.clientY-d.sy)>4)d.moved=true;
+          if(!d.moved)return; el.classList.add('dragging');
+          const body=el.parentElement, br=body.getBoundingClientRect();
+          let top=Math.max(0,Math.min(e.clientY-br.top-12, body.clientHeight-el.offsetHeight));
+          el.style.top=top+'px'; d.curTop=top;
+          const col=colUnder(e.clientX); bodies.forEach(b=>b.classList.toggle('dropcol',b===col)); });
+        el.addEventListener('pointerup',async e=>{ if(!d||d.el!==el)return;
+          el.releasePointerCapture(e.pointerId); bodies.forEach(b=>b.classList.remove('dropcol')); el.classList.remove('dragging');
+          if(!d.moved){ location.href=el.dataset.edit; d=null; return; }
+          const col=colUnder(e.clientX)||el.parentElement;
+          const mins=GRID_START+Math.round((d.curTop!=null?d.curTop:d.startTop)/INTERVAL)*INTERVAL;
+          const staff=col.dataset.staff, url=el.dataset.move; d=null;
+          try{ await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({date:DATE,staff_id:staff,start:fmt(mins)})}); }catch(_){}
+          location.reload(); });
+      });
+      bodies.forEach(body=>{ body.addEventListener('click',e=>{ if(e.target.closest('.dblock'))return; if(d)return;
+        const r=body.getBoundingClientRect(); const mins=GRID_START+Math.round((e.clientY-r.top)/INTERVAL)*INTERVAL;
+        location.href='/dashboard/bookings/new?date='+DATE+'&staff='+body.dataset.staff+'&start='+encodeURIComponent(fmt(mins)); }); });
+    })();
+    </script>
+  `)
+}
+
+app.post('/bookings/:id/move', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
+  const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(id, shop.id).first()
+  if (!b) return c.json({ error: 'not found' }, 404)
+  const f = await c.req.parseBody()
+  const date = (f.date || '').toString(), startT = (f.start || '').toString(), staffId = (f.staff_id || '').toString()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(startT) || !staffId) return c.json({ error: 'bad input' }, 400)
+  const staff = await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first()
+  if (!staff) return c.json({ error: 'bad staff' }, 400)
+  const dur = b.end_time - b.start_time
+  const startUnix = Math.floor(localToUtcMs(date, startT, shop.timezone) / 1000)
+  await db.prepare('UPDATE bookings SET start_time=?, end_time=?, staff_id=?, staff_name=? WHERE id=?')
+    .bind(startUnix, startUnix + dur, staff.id, staff.name, id).run()
+  if (b.customer_email && startUnix !== b.start_time) {
+    const p = sendRescheduleEmail(c.env, id)
+    if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
+  }
+  return c.json({ ok: true })
 })
 
 // ─── Bookings ────────────────────────────────────────────────────────────────
@@ -406,6 +552,12 @@ app.get('/bookings/new', async (c) => {
 
   const clients = await clientsForShop(db, shop.id)
   const v = { date, staff_id: c.req.query('staff') || staff[0].id, client_id: c.req.query('client') || '' }
+  const startQ = c.req.query('start')
+  if (/^\d{1,2}:\d{2}$/.test(startQ || '')) {
+    v.start = startQ
+    const [h, m] = startQ.split(':').map(Number), t = Math.min(h * 60 + m + 60, 23 * 60 + 55)
+    v.end = `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
+  }
   return shell(c, 'bookings', 'Add booking', `
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Add a booking</h2>
