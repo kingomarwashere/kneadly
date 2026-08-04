@@ -653,6 +653,12 @@ app.get('/bookings/:id/edit', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
   const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
   if (!b) return c.redirect('/dashboard/bookings')
+  // Ensure this booking is linked to a saved client (older bookings may not be),
+  // so the client name is clickable and opens a real profile.
+  if (!b.client_id && (b.customer_email || b.customer_phone)) {
+    const cid = await findOrCreateClient(db, shop.id, { name: b.customer_name, email: b.customer_email, phone: b.customer_phone })
+    if (cid) { await db.prepare('UPDATE bookings SET client_id=? WHERE id=?').bind(cid, b.id).run(); b.client_id = cid }
+  }
   const staff = (await db.prepare('SELECT id,name,emoji FROM staff WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
   const services = (await db.prepare('SELECT id,name,duration_minutes,price_cents FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
   const clients = await clientsForShop(db, shop.id)
