@@ -396,7 +396,7 @@ app.get('/bookings', async (c) => {
     `<a href="/dashboard/bookings?f=${f}" class="btn ${filter === f ? '' : 'ghost'} sm">${f[0].toUpperCase() + f.slice(1)}</a>`).join(' ')
 
   return shell(c, 'bookings', 'Bookings', `
-    <div class="inline" style="justify-content:space-between;flex-wrap:wrap;gap:8px"><h2>Bookings</h2><div class="inline" style="gap:8px"><a class="btn sm" href="/dashboard/bookings/new">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new">👥 Group</a>${tabs}</div></div>
+    <div class="inline" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:6px 0 4px;margin-bottom:8px"><h2 style="margin:0">Bookings</h2><div class="inline" style="gap:8px;flex-wrap:wrap;row-gap:8px"><a class="btn sm" href="/dashboard/bookings/new">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new">👥 Group</a>${tabs}</div></div>
     ${rows.length ? `<div class="card" style="padding:6px 18px"><table>
       <tr><th>When</th><th>Client</th><th>Service</th><th>Therapist</th><th>Deposit</th><th>Status</th><th></th></tr>
       ${rows.map(b => `<tr>
