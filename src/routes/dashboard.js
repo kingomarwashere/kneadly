@@ -573,7 +573,8 @@ async function resolveBookingInput(c, shop) {
   let clientId = (f.client_id || '').toString() || null
   if (clientId) {
     const cl = await db.prepare('SELECT id FROM clients WHERE id=? AND shop_id=?').bind(clientId, shop.id).first()
-    if (cl) await db.prepare('UPDATE clients SET name=?, email=?, phone=?, updated_at=unixepoch() WHERE id=?').bind(customerName, email || null, phone || null, clientId).run()
+    // Update the name, but never clobber a saved email/phone with a blank one.
+    if (cl) await db.prepare("UPDATE clients SET name=?, email=COALESCE(NULLIF(?,''), email), phone=COALESCE(NULLIF(?,''), phone), updated_at=unixepoch() WHERE id=?").bind(customerName, email, phone, clientId).run()
     else clientId = null
   }
   if (!clientId) clientId = await findOrCreateClient(db, shop.id, { name: customerName, email, phone })

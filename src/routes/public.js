@@ -8,6 +8,7 @@ import { genId } from '../lib/auth.js'
 import { sendBookingEmails } from '../lib/email.js'
 import { findOrCreateClient } from '../lib/clients.js'
 import { translate, translateAll } from '../lib/translate.js'
+import { loyaltyStatus } from '../lib/loyalty.js'
 
 const app = new Hono()
 
@@ -211,6 +212,9 @@ app.get('/:slug/book', async (c) => {
   const depositCents = Math.round(service.price_cents * shop.deposit_pct / 100)
   // Translate the chosen service's name + description for display.
   ;[service.name, service.description] = await translateAll(c.env, [service.name, service.description], lang)
+  // All services (translated) for the couple/group guest pickers.
+  const allServices = (await db.prepare('SELECT id,name,duration_minutes FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  await Promise.all(allServices.map(async s => { s.name = await translate(c.env, s.name, lang) }))
 
   const T = {
     loading: t(lang, 'loading'),
@@ -252,7 +256,16 @@ app.get('/:slug/book', async (c) => {
         <div class="field"><label>${t(lang, 'mobile')}</label><input name="phone" placeholder="${t(lang, 'optional')}"></div>
         <div class="field"><label>${t(lang, 'notes_label')}</label><textarea name="notes" rows="2" placeholder="${t(lang, 'notes_ph')}"></textarea></div>
 
-        <div class="card" style="padding:14px 16px;background:#f6f2ec;border-style:dashed;margin-bottom:16px">
+        <div class="field"><label>👥 ${t(lang, 'group_q')}</label>
+          <select name="people" id="people">${[1, 2, 3, 4].map(n => `<option value="${n}">${n}</option>`).join('')}</select>
+        </div>
+        ${[2, 3, 4].map(n => `<div class="guestx" data-n="${n}" style="display:none;border-top:1px dashed var(--line);padding-top:10px;margin-bottom:6px">
+          <div class="muted" style="font-size:.85rem;margin-bottom:6px">${t(lang, 'guest')} ${n}</div>
+          <div class="field"><label>${t(lang, 'full_name')}</label><input name="guest_name_${n}"></div>
+          <div class="field"><label>${t(lang, 'services')}</label><select name="guest_service_${n}"><option value="">—</option>${allServices.map(s => `<option value="${s.id}">${esc(s.name)} · ${s.duration_minutes} ${t(lang, 'min')}</option>`).join('')}</select></div>
+        </div>`).join('')}
+
+        <div id="depositcard" class="card" style="padding:14px 16px;background:#f6f2ec;border-style:dashed;margin-bottom:16px">
           ${depositCents > 0
             ? t(lang, 'deposit_line', { deposit: money(depositCents, shop.currency), rest: money(service.price_cents - depositCents, shop.currency), hours: shop.cancellation_hours })
             : t(lang, 'no_deposit_line')}
@@ -293,6 +306,8 @@ app.get('/:slug/book', async (c) => {
         submitEl.disabled=false;submitEl.textContent=T.confirm};timesEl.appendChild(b)});
   }
   staffEl.onchange=loadDates;loadDates();
+  var people=document.getElementById('people'),depc=document.getElementById('depositcard');
+  if(people)people.addEventListener('change',function(){var n=+people.value;document.querySelectorAll('.guestx').forEach(function(g){g.style.display=(+g.dataset.n<=n)?'':'none';});if(depc)depc.style.display=(n>1)?'none':'';});
   </script>
   `, { accent: shop.accent, lang }))
 })
@@ -335,15 +350,44 @@ app.post('/:slug/book', async (c) => {
   // it as a request for that therapist.
   const requestedStaff = (form.staff && form.staff.toString() !== 'any') ? 1 : 0
 
+  // Couple / group booking: extra guests at the same start time. Groups skip the
+  // online deposit (confirmed, pay in store) to keep it simple.
+  const guests = [2, 3, 4].map(n => ({ sid: (form[`guest_service_${n}`] || '').toString(), name: (form[`guest_name_${n}`] || '').toString().trim() || `Guest ${n}` })).filter(g => g.sid)
+  const isGroup = guests.length > 0
+  const groupId = isGroup ? genId() : null
+  const bStatus = isGroup ? 'confirmed' : status
+  const bDeposit = isGroup ? 0 : depositCents
+
   await db.prepare(`INSERT INTO bookings
     (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
-     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff, group_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(bookingId, shop.id, service.id, staffId, name, email, (form.phone || '').toString(),
-      startUnix, endUnix, status, service.price_cents, depositCents, service.name, staffRow?.name || '', (form.notes || '').toString(), c.get('lang') || 'en', clientId, requestedStaff).run()
+      startUnix, endUnix, bStatus, service.price_cents, bDeposit, service.name, staffRow?.name || '', (form.notes || '').toString(), c.get('lang') || 'en', clientId, requestedStaff, groupId).run()
+
+  // Create the extra guests — each assigned a free therapist for their service at
+  // the same start time (best-effort; a guest is skipped if none are free).
+  if (isGroup) {
+    const usedIds = new Set([staffId])
+    for (const g of guests) {
+      const gsvc = await db.prepare('SELECT * FROM services WHERE id=? AND shop_id=? AND is_active=1').bind(g.sid, shop.id).first()
+      if (!gsvc) continue
+      const gslot = (await slotsForDate(db, shop, gsvc, 'any', dateStr)).find(s => s.unix === startUnix)
+      const gStaff = gslot && gslot.staffIds.find(id => !usedIds.has(id))
+      if (!gStaff) continue
+      usedIds.add(gStaff)
+      const gRow = await db.prepare('SELECT name FROM staff WHERE id=?').bind(gStaff).first()
+      const gClient = await findOrCreateClient(db, shop.id, { name: g.name })
+      await db.prepare(`INSERT INTO bookings
+        (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
+         start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, lang, client_id, group_id)
+        VALUES (?, ?, ?, ?, ?, '', '', ?, ?, 'confirmed', ?, 0, ?, ?, ?, ?, ?)`)
+        .bind(genId(), shop.id, gsvc.id, gStaff, g.name, startUnix, startUnix + gsvc.duration_minutes * 60, gsvc.price_cents, gsvc.name, gRow?.name || '', c.get('lang') || 'en', gClient, groupId).run()
+    }
+  }
 
   // Payment required → Stripe Checkout
-  if (status === 'pending_payment') {
+  if (bStatus === 'pending_payment') {
     const base = c.env.BASE_URL || 'https://alisa.bored.investments'
     try {
       const session = await stripeClient(c.env.STRIPE_SECRET_KEY).createCheckoutSession({
@@ -391,6 +435,19 @@ app.get('/:slug/booked/:id', async (c) => {
 
   b.service_name = await translate(c.env, b.service_name, lang)
 
+  // Other guests in the same group (couples/group booking).
+  let groupMembers = []
+  if (b.group_id) {
+    groupMembers = (await db.prepare('SELECT customer_name, service_name, staff_name FROM bookings WHERE group_id=? AND id<>? ORDER BY customer_name').bind(b.group_id, b.id).all()).results || []
+    await Promise.all(groupMembers.map(async m => { m.service_name = await translate(c.env, m.service_name, lang) }))
+  }
+  // This customer's loyalty progress.
+  let loy = { enabled: false }
+  if (shop.loyalty_enabled && b.client_id) {
+    const client = await db.prepare('SELECT * FROM clients WHERE id=?').bind(b.client_id).first()
+    if (client) loy = await loyaltyStatus(db, shop, client)
+  }
+
   // Returning from Stripe before the webhook lands? Confirm optimistically.
   const paid = b.status === 'confirmed' || b.status === 'completed'
   const pending = b.status === 'pending_payment'
@@ -408,6 +465,15 @@ app.get('/:slug/booked/:id', async (c) => {
       <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_price')}</span><strong>${money(b.price_cents, shop.currency)}</strong></div>
       ${b.deposit_cents > 0 ? `<div style="display:flex;justify-content:space-between;padding:8px 0"><span class="muted">${t(lang, 'c_deposit_paid')}</span><strong>${money(b.deposit_cents, shop.currency)}</strong></div>` : ''}
     </div>
+    ${groupMembers.length ? `<div class="card" style="padding:16px 20px;text-align:left;margin-top:14px">
+      <div style="font-weight:600;margin-bottom:4px">👥 ${t(lang, 'group_booked', { n: groupMembers.length + 1 })}</div>
+      ${groupMembers.map(m => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span>${esc(m.customer_name)}</span><span class="muted">${esc(m.service_name)} · ${esc(m.staff_name || '')}</span></div>`).join('')}
+    </div>` : ''}
+    ${loy.enabled ? `<div class="card" style="padding:16px 20px;text-align:left;margin-top:14px;background:#fdf7e8;border-color:#f0d9a8">
+      <div style="font-weight:600">${t(lang, 'loyalty_head')}</div>
+      <div class="muted" style="margin:4px 0">${t(lang, 'loyalty_visits', { n: loy.completed })}</div>
+      ${loy.available.length ? `<div style="color:#8a6414;font-weight:600">${t(lang, 'loyalty_ready', { n: loy.available.length })}</div>` : (loy.next ? `<div class="muted">${t(lang, 'loyalty_next', { n: loy.next.visits - loy.completed, reward: loy.next.label })}</div>` : '')}
+    </div>` : ''}
     <p class="muted" style="font-size:.85rem;margin-top:16px">${t(lang, 'conf_email_note', { email: esc(b.customer_email), contact: esc(shop.phone || shop.name) })}</p>
     <a class="btn ghost" style="margin-top:8px" href="/${shop.slug}">${t(lang, 'back_to', { shop: esc(shop.name) })}</a>
   </div>
