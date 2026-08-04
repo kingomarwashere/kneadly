@@ -124,6 +124,30 @@ CREATE TABLE IF NOT EXISTS availability (
   FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
 );
 
+-- Loyalty reward tiers per shop (milestones, e.g. 5 visits = $20, 10 = $50).
+CREATE TABLE IF NOT EXISTS loyalty_tiers (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  visits INTEGER NOT NULL,
+  type TEXT NOT NULL DEFAULT 'amount',   -- 'amount' | 'percent'
+  value INTEGER NOT NULL,                 -- cents (amount) or percent
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_loyalty_tiers_shop ON loyalty_tiers(shop_id, visits);
+
+-- One row per redeemed reward (per client + milestone), linked to the booking.
+CREATE TABLE IF NOT EXISTS loyalty_redemptions (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  milestone INTEGER NOT NULL,             -- the tier's visit count that was redeemed
+  discount_cents INTEGER NOT NULL DEFAULT 0,
+  booking_id TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_loyalty_redemptions_client ON loyalty_redemptions(client_id, milestone);
+CREATE INDEX IF NOT EXISTS idx_loyalty_redemptions_booking ON loyalty_redemptions(booking_id);
+
 -- Cache of Workers-AI translations of owner content (service names/descriptions,
 -- tagline, about) into each customer language. Keyed by (lang, hash of source).
 CREATE TABLE IF NOT EXISTS translations (

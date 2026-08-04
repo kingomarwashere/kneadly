@@ -5,7 +5,7 @@ import { formatBookingTime, dateTzString, localToUtcMs } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
 import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTherapistInvite, sendReviewRequest } from '../lib/email.js'
 import { findOrCreateClient } from '../lib/clients.js'
-import { loyaltyStatus, loyaltyReward, loyaltyLabel, loyaltyAvailByClient } from '../lib/loyalty.js'
+import { loyaltyStatus, tierDiscount, tierLabel, getTiers, loyaltyAvailByClient } from '../lib/loyalty.js'
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -445,9 +445,7 @@ async function bookingAction(c, action) {
     }
     await db.prepare("UPDATE bookings SET status='cancelled' WHERE id=?").bind(id).run()
     // Give the loyalty reward back if this booking had used one.
-    if (b.loyalty_applied > 0 && b.client_id) {
-      await db.prepare('UPDATE clients SET loyalty_redeemed = MAX(0, loyalty_redeemed - 1) WHERE id=?').bind(b.client_id).run()
-    }
+    if (b.loyalty_applied > 0) await db.prepare('DELETE FROM loyalty_redemptions WHERE booking_id=?').bind(id).run()
     // Tell the customer (localized), noting the refund if one was issued. Non-blocking.
     const emailP = sendCancellationEmail(c.env, id)
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(emailP); else await emailP
@@ -465,8 +463,8 @@ const rosterWeekOf = (date) => { const dow = new Date(date + 'T12:00:00Z').getUT
 const clientsForShop = (db, shopId) => db.prepare('SELECT id,name,email,phone,notes FROM clients WHERE shop_id=? ORDER BY name COLLATE NOCASE LIMIT 1000').bind(shopId).all().then(r => r.results || [])
 
 // Shared create/edit form. `v` holds prefilled values, `action` the POST target.
-// `loyaltyLbl` (string) shows an "apply loyalty reward" option (create only).
-function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}, loyaltyLbl = null) {
+// `loyaltyOn` shows an "apply loyalty reward" picker (create only).
+function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}, loyaltyOn = false) {
   return `
     <form method="post" action="${action}" class="card" style="padding:22px;max-width:580px">
       <div class="row">
@@ -512,7 +510,7 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
       <div class="field"><label>Customer email <span class="muted">(optional — emails a confirmation/update)</span></label><input type="email" name="customer_email" id="ce" value="${esc(v.customer_email || '')}"></div>
       <div class="field"><label>Appointment notes <span class="muted">(this booking only)</span></label><input name="notes" value="${esc(v.notes || '')}" placeholder="Injuries, preferences…"></div>
       <div class="field"><label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" name="requested_staff" value="1" style="width:auto" ${v.requested_staff ? 'checked' : ''}> ❤️ Client requested this therapist — don’t reassign to anyone else</label></div>
-      ${loyaltyLbl ? `<div class="field" id="loyaltyrow" style="display:none"><label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer;color:#8a6414"><input type="checkbox" name="apply_loyalty" value="1" style="width:auto" id="loyaltycb"> 🎁 Apply loyalty reward — <strong>${loyaltyLbl}</strong> <span id="loyaltyavail" class="muted"></span></label></div>` : ''}
+      ${loyaltyOn ? `<div class="field" id="loyaltyrow" style="display:none"><label style="color:#8a6414">🎁 Apply loyalty reward</label><select name="loyalty_milestone" id="loyaltysel"><option value="">— none —</option></select></div>` : ''}
       <button class="btn">${submitLabel}</button>
     </form>
     <script>
@@ -523,12 +521,12 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
     svc.addEventListener('change',()=>{fillEnd();const o=svc.selectedOptions[0];if(o&&o.dataset.price&&!pr.value)pr.value=(+o.dataset.price/100).toFixed(0);});
     st.addEventListener('change',fillEnd);
     // Searchable client picker — filter saved clients by name / phone / email.
-    var CLIENTS=${JSON.stringify(clients.map(cl => ({ id: cl.id, name: cl.name, email: cl.email || '', phone: cl.phone || '', notes: cl.notes || '', reward: cl.reward || 0 })))};
+    var CLIENTS=${JSON.stringify(clients.map(cl => ({ id: cl.id, name: cl.name, email: cl.email || '', phone: cl.phone || '', notes: cl.notes || '', rewards: cl.rewards || [] })))};
     var cs=document.getElementById('clientsearch'),cid=document.getElementById('client_id'),cres=document.getElementById('clientresults'),cnb=document.getElementById('clientnotes'),cn=document.getElementById('cn'),ce=document.getElementById('ce'),cp=document.getElementById('cp');
-    var loyrow=document.getElementById('loyaltyrow'),loycb=document.getElementById('loyaltycb'),loyav=document.getElementById('loyaltyavail');
+    var loyrow=document.getElementById('loyaltyrow'),loysel=document.getElementById('loyaltysel');
     function acEsc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
     function showNotes(n){ if(n){cnb.textContent='📋 '+n;cnb.style.display='block';} else {cnb.style.display='none';} }
-    function showLoyalty(c){ if(!loyrow)return; if(c&&c.reward>0){loyrow.style.display='';if(loyav)loyav.textContent='('+c.reward+' available)';} else {loyrow.style.display='none';if(loycb)loycb.checked=false;} }
+    function showLoyalty(c){ if(!loyrow||!loysel)return; var rw=(c&&c.rewards)||[]; if(rw.length){ loysel.innerHTML='<option value="">— none —</option>'+rw.map(function(r){return '<option value="'+r.visits+'">'+acEsc(r.label)+' ('+r.visits+' visits)</option>';}).join(''); loyrow.style.display=''; } else { loysel.innerHTML='<option value="">— none —</option>'; loyrow.style.display='none'; } }
     function pick(c){ cid.value=c.id; cs.value=c.name; cn.value=c.name; ce.value=c.email; cp.value=c.phone; showNotes(c.notes); showLoyalty(c); cres.style.display='none'; }
     function newClient(){ cid.value=''; showNotes(''); showLoyalty(null); cres.style.display='none'; cn.focus(); }
     function digits(s){return String(s).replace(/\\D/g,'');}
@@ -583,7 +581,7 @@ async function resolveBookingInput(c, shop) {
   return {
     date, staff, startUnix, endUnix, serviceId: sv.id, serviceName: customName || sv.name, priceCents,
     customerName, email, phone, clientId, notes: (f.notes || '').toString(), requested: f.requested_staff ? 1 : 0,
-    applyLoyalty: f.apply_loyalty ? 1 : 0,
+    loyaltyMilestone: parseInt(f.loyalty_milestone) || 0,
   }
 }
 
@@ -597,8 +595,8 @@ app.get('/bookings/new', async (c) => {
 
   const clients = await clientsForShop(db, shop.id)
   const avail = await loyaltyAvailByClient(db, shop)
-  clients.forEach(cl => { cl.reward = avail[cl.id] || 0 })
-  const loyLbl = shop.loyalty_enabled ? loyaltyLabel(shop) : null
+  clients.forEach(cl => { cl.rewards = avail[cl.id] || [] })
+  const loyOn = !!shop.loyalty_enabled
   const v = { date, staff_id: c.req.query('staff') || staff[0].id }
   // Prefill the client (name/phone/email) when arriving from a client's "Book again".
   const clientQ = c.req.query('client')
@@ -616,7 +614,7 @@ app.get('/bookings/new', async (c) => {
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Add a booking</h2>
     <p class="muted" style="margin-top:-6px">Manually schedule an appointment at any time — pick a start and end, e.g. <strong>9:10 am</strong> to <strong>10:25 am</strong>.</p>
-    ${bookingForm(shop, staff, services, clients, '/dashboard/bookings/new', 'Add booking', v, loyLbl)}
+    ${bookingForm(shop, staff, services, clients, '/dashboard/bookings/new', 'Add booking', v, loyOn)}
   `)
 })
 
@@ -625,15 +623,16 @@ app.post('/bookings/new', async (c) => {
   const r = await resolveBookingInput(c, shop)
   if (r.error) return c.redirect(`/dashboard/bookings/new${r.date ? `?date=${r.date}` : ''}`)
 
-  // Apply a loyalty reward if requested and genuinely available (re-checked here).
-  let priceCents = r.priceCents, loyaltyApplied = 0
-  if (r.applyLoyalty && r.clientId && shop.loyalty_enabled) {
+  // Apply a chosen loyalty reward tier if the client genuinely has it available.
+  let priceCents = r.priceCents, loyaltyApplied = 0, redeemMilestone = 0
+  if (r.loyaltyMilestone && r.clientId && shop.loyalty_enabled) {
     const client = await db.prepare('SELECT * FROM clients WHERE id=? AND shop_id=?').bind(r.clientId, shop.id).first()
     const st = await loyaltyStatus(db, shop, client)
-    if (st.enabled && st.available > 0) {
-      loyaltyApplied = loyaltyReward(shop, priceCents)
+    const tier = st.available && st.available.find(t => t.visits === r.loyaltyMilestone)
+    if (tier) {
+      loyaltyApplied = tierDiscount(tier, priceCents)
       priceCents = Math.max(0, priceCents - loyaltyApplied)
-      await db.prepare('UPDATE clients SET loyalty_redeemed = loyalty_redeemed + 1 WHERE id=?').bind(r.clientId).run()
+      redeemMilestone = r.loyaltyMilestone
     }
   }
 
@@ -644,6 +643,7 @@ app.post('/bookings/new', async (c) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, 0, ?, ?, ?, 'en', ?, ?, ?)`)
     .bind(id, shop.id, r.serviceId, r.staff.id, r.customerName, r.email, r.phone,
       r.startUnix, r.endUnix, priceCents, r.serviceName, r.staff.name, r.notes, r.clientId, r.requested, loyaltyApplied).run()
+  if (redeemMilestone) await db.prepare('INSERT INTO loyalty_redemptions (id, shop_id, client_id, milestone, discount_cents, booking_id) VALUES (?, ?, ?, ?, ?, ?)').bind(genId(), shop.id, r.clientId, redeemMilestone, loyaltyApplied, id).run()
 
   if (r.email) {
     const p = sendBookingEmails(c.env, id)
@@ -1003,6 +1003,13 @@ app.post('/staff/:id/hours', async (c) => {
 app.get('/settings', async (c) => {
   const shop = c.get('shop')
   const f = (k, v) => esc(shop[k] ?? v ?? '')
+  const tiers = await getTiers(c.env.DB, shop.id)
+  const TIER_ROWS = 8
+  const tierRow = (i, t) => `<tr class="tierrow" style="${i < Math.max(tiers.length + 1, 2) ? '' : 'display:none'}">
+    <td><input type="number" name="tier_visits_${i}" value="${t ? t.visits : ''}" min="1" placeholder="5" style="max-width:90px"></td>
+    <td><select name="tier_type_${i}"><option value="amount" ${t && t.type === 'percent' ? '' : 'selected'}>Amount off</option><option value="percent" ${t && t.type === 'percent' ? 'selected' : ''}>% off</option></select></td>
+    <td><input type="number" name="tier_value_${i}" value="${t ? (t.type === 'percent' ? t.value : t.value / 100) : ''}" min="0" step="1" placeholder="20" style="max-width:100px"></td>
+    <td><button type="button" class="btn ghost sm rmtier">✕</button></td></tr>`
   return shell(c, 'settings', 'Settings', `
     <h2>Shop settings</h2>
     <form method="post" action="/dashboard/settings">
@@ -1049,13 +1056,18 @@ app.get('/settings', async (c) => {
       </div>
       <div class="card" style="padding:22px;margin-bottom:18px">
         <h3 style="margin-top:0">🎁 Loyalty program</h3>
-        <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" name="loyalty_enabled" value="1" style="width:auto" ${shop.loyalty_enabled ? 'checked' : ''}> Enable a loyalty reward</label>
-        <div class="row" style="margin-top:12px">
-          <div class="field"><label>Reward every (completed visits)</label><input type="number" name="loyalty_threshold" value="${f('loyalty_threshold', 5)}" min="1"></div>
-          <div class="field"><label>Reward type</label><select name="loyalty_type"><option value="amount" ${shop.loyalty_type !== 'percent' ? 'selected' : ''}>Amount off</option><option value="percent" ${shop.loyalty_type === 'percent' ? 'selected' : ''}>% off</option></select></div>
-          <div class="field"><label>Reward value (${shop.currency.toUpperCase()} or %)</label><input type="number" name="loyalty_value_input" value="${shop.loyalty_type === 'percent' ? (shop.loyalty_value || 10) : ((shop.loyalty_value || 2000) / 100)}" min="0" step="1"></div>
-        </div>
-        <p class="muted" style="font-size:.82rem;margin:0">e.g. every <strong>5</strong> completed visits earns <strong>$20 off</strong> (or a %). The reward can be applied on the client’s next booking.</p>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" name="loyalty_enabled" value="1" style="width:auto" ${shop.loyalty_enabled ? 'checked' : ''}> Enable loyalty rewards</label>
+        <p class="muted" style="font-size:.82rem;margin:8px 0">Add reward tiers — e.g. <strong>5 visits = $20 off</strong>, <strong>10 = $50 off</strong>, <strong>20 = 100% off</strong>. Each is a one-time reward a client earns after that many completed visits.</p>
+        <table id="tiertable" style="margin-bottom:10px"><tr><th>After (visits)</th><th>Reward</th><th>Value (${shop.currency.toUpperCase()} or %)</th><th></th></tr>
+          ${Array.from({ length: TIER_ROWS }, (_, i) => tierRow(i, tiers[i])).join('')}
+        </table>
+        <button type="button" class="btn ghost sm" id="addtier">＋ Add tier</button>
+        <script>
+        (function(){var rows=[].slice.call(document.querySelectorAll('#tiertable .tierrow'));
+          var add=document.getElementById('addtier'); if(add)add.addEventListener('click',function(){for(var i=0;i<rows.length;i++){if(rows[i].style.display==='none'){rows[i].style.display='';break;}}});
+          document.querySelectorAll('#tiertable .rmtier').forEach(function(b){b.addEventListener('click',function(){var r=b.closest('.tierrow');r.style.display='none';r.querySelectorAll('input').forEach(function(el){el.value='';});});});
+        })();
+        </script>
       </div>
       <button class="btn">Save settings</button>
     </form>
@@ -1073,18 +1085,28 @@ app.post('/settings', async (c) => {
   if (clash) slug = `${slug}-${shop.id.slice(0, 4)}`
 
   const interval = [5, 10, 15, 20, 30, 60].includes(parseInt(f.slot_interval_minutes)) ? parseInt(f.slot_interval_minutes) : 15
-  const loyType = f.loyalty_type === 'percent' ? 'percent' : 'amount'
-  const loyValIn = parseFloat(f.loyalty_value_input) || 0
-  const loyValue = loyType === 'percent' ? Math.max(0, Math.min(100, Math.round(loyValIn))) : Math.max(0, Math.round(loyValIn * 100))
   await db.prepare(`UPDATE shops SET name=?, emoji=?, tagline=?, about=?, slug=?, accent=?, phone=?, email=?,
-    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, google_review_url=?,
-    loyalty_enabled=?, loyalty_threshold=?, loyalty_type=?, loyalty_value=? WHERE id=?`)
+    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, google_review_url=?, loyalty_enabled=? WHERE id=?`)
     .bind((f.name || shop.name).toString().trim(), (f.emoji || '💆').toString().trim() || '💆',
       (f.tagline || '').toString(), (f.about || '').toString(), slug, (f.accent || '#0f766e').toString(),
       (f.phone || '').toString(), (f.email || '').toString(), (f.address || '').toString(),
       (f.suburb || '').toString(), (f.state || '').toString(), (f.postcode || '').toString(),
       (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, interval, (f.google_review_url || '').toString().trim() || null,
-      f.loyalty_enabled ? 1 : 0, Math.max(1, parseInt(f.loyalty_threshold) || 5), loyType, loyValue, shop.id).run()
+      f.loyalty_enabled ? 1 : 0, shop.id).run()
+
+  // Replace loyalty tiers from the form rows.
+  await db.prepare('DELETE FROM loyalty_tiers WHERE shop_id=?').bind(shop.id).run()
+  const seen = new Set()
+  for (let i = 0; i < 8; i++) {
+    const visits = parseInt(f[`tier_visits_${i}`])
+    const valIn = parseFloat(f[`tier_value_${i}`])
+    const type = f[`tier_type_${i}`] === 'percent' ? 'percent' : 'amount'
+    if (!visits || visits < 1 || !valIn || valIn <= 0 || seen.has(visits)) continue
+    const value = type === 'percent' ? Math.max(0, Math.min(100, Math.round(valIn))) : Math.max(0, Math.round(valIn * 100))
+    if (value <= 0) continue
+    seen.add(visits)
+    await db.prepare('INSERT INTO loyalty_tiers (id, shop_id, visits, type, value) VALUES (?, ?, ?, ?, ?)').bind(genId(), shop.id, visits, type, value).run()
+  }
   return c.redirect('/dashboard/settings')
 })
 
@@ -1206,7 +1228,11 @@ app.get('/clients/:id', async (c) => {
       <div class="card" style="padding:16px"><div class="muted">Total pay</div><div class="stat">${money(tot?.spent || 0, shop.currency)}</div></div>
     </div>
     ${loy.enabled ? `<div class="card" style="padding:14px 16px;margin:6px 0 0;background:#fdf7e8;border-color:#f0d9a8">
-      🎁 <strong>Loyalty:</strong> ${loy.completed} completed visit${loy.completed === 1 ? '' : 's'} · <strong>${loy.toward}/${loy.threshold}</strong> toward the next <strong>${loy.label}</strong>${loy.available > 0 ? ` · <span style="color:#8a6414;font-weight:700">${loy.available} reward${loy.available === 1 ? '' : 's'} ready 🎉</span>` : ''}
+      🎁 <strong>Loyalty</strong> · ${loy.completed} completed visit${loy.completed === 1 ? '' : 's'}
+      <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
+        ${loy.tiers.map(t => `<span class="tag" style="background:${t.available ? '#e4f3ea' : (t.redeemed ? '#f0eeec' : '#fff')};color:${t.available ? '#2f8a5b' : '#7a736c'};border:1px solid var(--line)">${t.available ? '🎉 ' : (t.reached ? '✓ ' : '')}${t.visits} visits — ${esc(t.label)}${t.redeemed ? ' (used)' : ''}</span>`).join('')}
+      </div>
+      ${loy.available.length ? `<div style="margin-top:6px;color:#8a6414;font-weight:700">${loy.available.length} reward${loy.available.length === 1 ? '' : 's'} ready 🎉</div>` : (loy.next ? `<div class="muted" style="margin-top:6px">${loy.next.visits - loy.completed} more visit${loy.next.visits - loy.completed === 1 ? '' : 's'} to ${esc(loy.next.label)}</div>` : '')}
     </div>` : ''}
     <div class="grid g2" style="margin-top:14px;align-items:start">
       <form method="post" action="/dashboard/clients/${cl.id}" class="card" style="padding:22px">
