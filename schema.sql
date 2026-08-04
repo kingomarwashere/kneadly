@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS shops (
   cancellation_hours INTEGER NOT NULL DEFAULT 24,
   slot_interval_minutes INTEGER NOT NULL DEFAULT 15,  -- spacing between bookable start times
   google_review_url TEXT,        -- shop's Google review link (for the review handoff)
+  loyalty_enabled INTEGER NOT NULL DEFAULT 0,
+  loyalty_threshold INTEGER NOT NULL DEFAULT 5,   -- completed visits per reward
+  loyalty_type TEXT NOT NULL DEFAULT 'amount',    -- 'amount' | 'percent'
+  loyalty_value INTEGER NOT NULL DEFAULT 2000,    -- cents (amount) or percent
   is_published INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
@@ -159,6 +163,7 @@ CREATE TABLE IF NOT EXISTS clients (
   email TEXT,
   phone TEXT,
   notes TEXT,
+  loyalty_redeemed INTEGER NOT NULL DEFAULT 0,  -- loyalty rewards already redeemed
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
@@ -204,6 +209,9 @@ CREATE TABLE IF NOT EXISTS bookings (
   reminder_sent_at INTEGER,       -- set once a day-before reminder email has gone out
   client_id TEXT,                 -- linked saved client (nullable)
   requested_staff INTEGER NOT NULL DEFAULT 0,  -- client specifically requested this therapist (don't reassign)
+  group_id TEXT,                  -- links bookings made together (couples / group)
+  room TEXT,                      -- optional room label (e.g. "Couple Room 1")
+  loyalty_applied INTEGER NOT NULL DEFAULT 0,  -- loyalty discount applied to this booking (cents)
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,
   FOREIGN KEY (service_id) REFERENCES services(id),

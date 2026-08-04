@@ -5,6 +5,7 @@ import { formatBookingTime, dateTzString, localToUtcMs } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
 import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTherapistInvite, sendReviewRequest } from '../lib/email.js'
 import { findOrCreateClient } from '../lib/clients.js'
+import { loyaltyStatus, loyaltyReward, loyaltyLabel, loyaltyAvailByClient } from '../lib/loyalty.js'
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -234,7 +235,7 @@ async function renderWeekRoster(c) {
     // Each booking block links to its edit/reschedule page.
     const bkHtml = dayBk.map(b =>
       `<a class="bk ${b.status}" href="/dashboard/bookings/${b.id}/edit"><strong>${timeOnly(b.start_time, tz)}</strong> ${esc(b.service_name || '')}
-        <div class="bkmeta">${esc(b.customer_name)} · ${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</div></a>`).join('')
+        <div class="bkmeta">${esc(b.customer_name)} · ${b.requested_staff ? '❤️ ' : ''}${b.group_id ? '👥 ' : ''}${esc(b.staff_name || '')}</div></a>`).join('')
 
     return `<div class="rcol${ds === today ? ' today' : ''}">
       <div class="rhead">${DOW[dow]} <span>${dnum}</span></div>
@@ -254,7 +255,7 @@ async function renderWeekRoster(c) {
     ${ROSTER_CSS}
     <div class="inline" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <div class="inline" style="gap:12px"><h2 style="margin:0">Roster</h2>${vtoggle('week', today, weekStart)}</div>
-      <div class="inline" style="gap:8px;flex-wrap:wrap"><a class="btn sm" href="/dashboard/bookings/new?date=${weekStart}">➕ Add booking</a>${nav}</div>
+      <div class="inline" style="gap:8px;flex-wrap:wrap"><a class="btn sm" href="/dashboard/bookings/new?date=${weekStart}">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new?date=${weekStart}">👥 Group</a>${nav}</div>
     </div>
     <div class="muted" style="margin:6px 0 12px">${label} · ${bookings.length} booking${bookings.length === 1 ? '' : 's'}</div>
     <div class="rgrid">${cols}</div>
@@ -295,7 +296,7 @@ async function renderDayRoster(c) {
     const blocks = (bkByStaff[st.id] || []).map(b => {
       const s = minsOfDay(b.start_time, tz), e = minsOfDay(b.end_time, tz)
       return `<div class="dblock ${b.status}" data-id="${b.id}"${b.requested_staff ? ' data-locked="1"' : ''} data-edit="/dashboard/bookings/${b.id}/edit" data-move="/dashboard/bookings/${b.id}/move" style="top:${s - gridStart}px;height:${Math.max(20, e - s)}px" title="${b.requested_staff ? 'Requested therapist (locked) · ' : ''}Drag to move · click to edit">
-        <div class="dbtime">${timeOnly(b.start_time, tz)}${b.requested_staff ? ' ❤️' : ''}</div><div class="dbname">${esc(b.customer_name)}</div><div class="dbsvc">${esc(b.service_name || '')}</div></div>`
+        <div class="dbtime">${timeOnly(b.start_time, tz)}${b.requested_staff ? ' ❤️' : ''}${b.group_id ? ' 👥' : ''}</div><div class="dbname">${esc(b.customer_name)}</div><div class="dbsvc">${esc(b.service_name || '')}</div></div>`
     }).join('')
     const hrs = (a && !off) ? `<span class="whrs">${a.start_time}–${a.end_time}</span>` : `<span class="whrs">${off ? 'off' : 'closed'}</span>`
     return {
@@ -315,7 +316,7 @@ async function renderDayRoster(c) {
     ${ROSTER_CSS}
     <div class="inline" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <div class="inline" style="gap:12px"><h2 style="margin:0">Roster</h2>${vtoggle('day', date, monOf(date))}</div>
-      <div class="inline" style="gap:8px;flex-wrap:wrap"><a class="btn sm" href="/dashboard/bookings/new?date=${date}">➕ Add booking</a>${nav}</div>
+      <div class="inline" style="gap:8px;flex-wrap:wrap"><a class="btn sm" href="/dashboard/bookings/new?date=${date}">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new?date=${date}">👥 Group</a>${nav}</div>
     </div>
     <div class="muted" style="margin:6px 0 12px">${heading}${date === today ? ' · today' : ''} · ${bookings.length} booking${bookings.length === 1 ? '' : 's'} · <span style="font-size:.9em">drag a booking to reschedule · click a slot to add</span></div>
     ${n ? `<div class="dg" style="grid-template-columns:52px repeat(${n},minmax(130px,1fr))">
@@ -399,7 +400,7 @@ app.get('/bookings', async (c) => {
     `<a href="/dashboard/bookings?f=${f}" class="btn ${filter === f ? '' : 'ghost'} sm">${f[0].toUpperCase() + f.slice(1)}</a>`).join(' ')
 
   return shell(c, 'bookings', 'Bookings', `
-    <div class="inline" style="justify-content:space-between;flex-wrap:wrap;gap:8px"><h2>Bookings</h2><div class="inline" style="gap:8px"><a class="btn sm" href="/dashboard/bookings/new">➕ Add booking</a>${tabs}</div></div>
+    <div class="inline" style="justify-content:space-between;flex-wrap:wrap;gap:8px"><h2>Bookings</h2><div class="inline" style="gap:8px"><a class="btn sm" href="/dashboard/bookings/new">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new">👥 Group</a>${tabs}</div></div>
     ${rows.length ? `<div class="card" style="padding:6px 18px"><table>
       <tr><th>When</th><th>Client</th><th>Service</th><th>Therapist</th><th>Deposit</th><th>Status</th><th></th></tr>
       ${rows.map(b => `<tr>
@@ -443,6 +444,10 @@ async function bookingAction(c, action) {
       } catch (e) { console.error('refund failed:', e.message) }
     }
     await db.prepare("UPDATE bookings SET status='cancelled' WHERE id=?").bind(id).run()
+    // Give the loyalty reward back if this booking had used one.
+    if (b.loyalty_applied > 0 && b.client_id) {
+      await db.prepare('UPDATE clients SET loyalty_redeemed = MAX(0, loyalty_redeemed - 1) WHERE id=?').bind(b.client_id).run()
+    }
     // Tell the customer (localized), noting the refund if one was issued. Non-blocking.
     const emailP = sendCancellationEmail(c.env, id)
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(emailP); else await emailP
@@ -460,7 +465,8 @@ const rosterWeekOf = (date) => { const dow = new Date(date + 'T12:00:00Z').getUT
 const clientsForShop = (db, shopId) => db.prepare('SELECT id,name,email,phone,notes FROM clients WHERE shop_id=? ORDER BY name COLLATE NOCASE LIMIT 1000').bind(shopId).all().then(r => r.results || [])
 
 // Shared create/edit form. `v` holds prefilled values, `action` the POST target.
-function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}) {
+// `loyaltyLbl` (string) shows an "apply loyalty reward" option (create only).
+function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}, loyaltyLbl = null) {
   return `
     <form method="post" action="${action}" class="card" style="padding:22px;max-width:580px">
       <div class="row">
@@ -506,6 +512,7 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
       <div class="field"><label>Customer email <span class="muted">(optional — emails a confirmation/update)</span></label><input type="email" name="customer_email" id="ce" value="${esc(v.customer_email || '')}"></div>
       <div class="field"><label>Appointment notes <span class="muted">(this booking only)</span></label><input name="notes" value="${esc(v.notes || '')}" placeholder="Injuries, preferences…"></div>
       <div class="field"><label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" name="requested_staff" value="1" style="width:auto" ${v.requested_staff ? 'checked' : ''}> ❤️ Client requested this therapist — don’t reassign to anyone else</label></div>
+      ${loyaltyLbl ? `<div class="field" id="loyaltyrow" style="display:none"><label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer;color:#8a6414"><input type="checkbox" name="apply_loyalty" value="1" style="width:auto" id="loyaltycb"> 🎁 Apply loyalty reward — <strong>${loyaltyLbl}</strong> <span id="loyaltyavail" class="muted"></span></label></div>` : ''}
       <button class="btn">${submitLabel}</button>
     </form>
     <script>
@@ -516,12 +523,14 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
     svc.addEventListener('change',()=>{fillEnd();const o=svc.selectedOptions[0];if(o&&o.dataset.price&&!pr.value)pr.value=(+o.dataset.price/100).toFixed(0);});
     st.addEventListener('change',fillEnd);
     // Searchable client picker — filter saved clients by name / phone / email.
-    var CLIENTS=${JSON.stringify(clients.map(cl => ({ id: cl.id, name: cl.name, email: cl.email || '', phone: cl.phone || '', notes: cl.notes || '' })))};
+    var CLIENTS=${JSON.stringify(clients.map(cl => ({ id: cl.id, name: cl.name, email: cl.email || '', phone: cl.phone || '', notes: cl.notes || '', reward: cl.reward || 0 })))};
     var cs=document.getElementById('clientsearch'),cid=document.getElementById('client_id'),cres=document.getElementById('clientresults'),cnb=document.getElementById('clientnotes'),cn=document.getElementById('cn'),ce=document.getElementById('ce'),cp=document.getElementById('cp');
+    var loyrow=document.getElementById('loyaltyrow'),loycb=document.getElementById('loyaltycb'),loyav=document.getElementById('loyaltyavail');
     function acEsc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
     function showNotes(n){ if(n){cnb.textContent='📋 '+n;cnb.style.display='block';} else {cnb.style.display='none';} }
-    function pick(c){ cid.value=c.id; cs.value=c.name; cn.value=c.name; ce.value=c.email; cp.value=c.phone; showNotes(c.notes); cres.style.display='none'; }
-    function newClient(){ cid.value=''; showNotes(''); cres.style.display='none'; cn.focus(); }
+    function showLoyalty(c){ if(!loyrow)return; if(c&&c.reward>0){loyrow.style.display='';if(loyav)loyav.textContent='('+c.reward+' available)';} else {loyrow.style.display='none';if(loycb)loycb.checked=false;} }
+    function pick(c){ cid.value=c.id; cs.value=c.name; cn.value=c.name; ce.value=c.email; cp.value=c.phone; showNotes(c.notes); showLoyalty(c); cres.style.display='none'; }
+    function newClient(){ cid.value=''; showNotes(''); showLoyalty(null); cres.style.display='none'; cn.focus(); }
     function digits(s){return String(s).replace(/\\D/g,'');}
     function search(){ var q=cs.value.trim().toLowerCase(), qd=digits(q);
       var list = q ? CLIENTS.filter(function(c){ return c.name.toLowerCase().indexOf(q)>=0 || (qd && digits(c.phone).indexOf(qd)>=0) || (c.email && c.email.toLowerCase().indexOf(q)>=0); }) : [];
@@ -533,8 +542,8 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
     cs.addEventListener('focus',search);
     cres.addEventListener('mousedown',function(e){ var it=e.target.closest('.acitem'); if(!it)return; e.preventDefault(); if(it.dataset.new){newClient();} else {pick(cres._list[+it.dataset.i]);} });
     document.addEventListener('click',function(e){ if(!cres.contains(e.target)&&e.target!==cs) cres.style.display='none'; });
-    // On an edit with a linked client, show their saved notes straight away.
-    (function(){ if(cid.value){ var c=CLIENTS.filter(function(x){return x.id===cid.value;})[0]; if(c) showNotes(c.notes); } })();
+    // On an edit/prefill with a linked client, show their notes + loyalty straight away.
+    (function(){ if(cid.value){ var c=CLIENTS.filter(function(x){return x.id===cid.value;})[0]; if(c){ showNotes(c.notes); showLoyalty(c); } } })();
     </script>`
 }
 
@@ -574,6 +583,7 @@ async function resolveBookingInput(c, shop) {
   return {
     date, staff, startUnix, endUnix, serviceId: sv.id, serviceName: customName || sv.name, priceCents,
     customerName, email, phone, clientId, notes: (f.notes || '').toString(), requested: f.requested_staff ? 1 : 0,
+    applyLoyalty: f.apply_loyalty ? 1 : 0,
   }
 }
 
@@ -586,6 +596,9 @@ app.get('/bookings/new', async (c) => {
   if (!services.length) return shell(c, 'bookings', 'Add booking', `<h2>Add a booking</h2><p class="muted">Add a <a href="/dashboard/services">service</a> first — bookings attach to one (you can still set any custom time and label).</p>`)
 
   const clients = await clientsForShop(db, shop.id)
+  const avail = await loyaltyAvailByClient(db, shop)
+  clients.forEach(cl => { cl.reward = avail[cl.id] || 0 })
+  const loyLbl = shop.loyalty_enabled ? loyaltyLabel(shop) : null
   const v = { date, staff_id: c.req.query('staff') || staff[0].id }
   // Prefill the client (name/phone/email) when arriving from a client's "Book again".
   const clientQ = c.req.query('client')
@@ -603,7 +616,7 @@ app.get('/bookings/new', async (c) => {
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Add a booking</h2>
     <p class="muted" style="margin-top:-6px">Manually schedule an appointment at any time — pick a start and end, e.g. <strong>9:10 am</strong> to <strong>10:25 am</strong>.</p>
-    ${bookingForm(shop, staff, services, clients, '/dashboard/bookings/new', 'Add booking', v)}
+    ${bookingForm(shop, staff, services, clients, '/dashboard/bookings/new', 'Add booking', v, loyLbl)}
   `)
 })
 
@@ -612,13 +625,25 @@ app.post('/bookings/new', async (c) => {
   const r = await resolveBookingInput(c, shop)
   if (r.error) return c.redirect(`/dashboard/bookings/new${r.date ? `?date=${r.date}` : ''}`)
 
+  // Apply a loyalty reward if requested and genuinely available (re-checked here).
+  let priceCents = r.priceCents, loyaltyApplied = 0
+  if (r.applyLoyalty && r.clientId && shop.loyalty_enabled) {
+    const client = await db.prepare('SELECT * FROM clients WHERE id=? AND shop_id=?').bind(r.clientId, shop.id).first()
+    const st = await loyaltyStatus(db, shop, client)
+    if (st.enabled && st.available > 0) {
+      loyaltyApplied = loyaltyReward(shop, priceCents)
+      priceCents = Math.max(0, priceCents - loyaltyApplied)
+      await db.prepare('UPDATE clients SET loyalty_redeemed = loyalty_redeemed + 1 WHERE id=?').bind(r.clientId).run()
+    }
+  }
+
   const id = genId()
   await db.prepare(`INSERT INTO bookings
     (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
-     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, 0, ?, ?, ?, 'en', ?, ?)`)
+     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff, loyalty_applied)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, 0, ?, ?, ?, 'en', ?, ?, ?)`)
     .bind(id, shop.id, r.serviceId, r.staff.id, r.customerName, r.email, r.phone,
-      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes, r.clientId, r.requested).run()
+      r.startUnix, r.endUnix, priceCents, r.serviceName, r.staff.name, r.notes, r.clientId, r.requested, loyaltyApplied).run()
 
   if (r.email) {
     const p = sendBookingEmails(c.env, id)
@@ -682,7 +707,7 @@ app.get('/bookings/:id/edit', async (c) => {
   return shell(c, 'bookings', 'Edit booking', `
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Edit / reschedule booking</h2>
-    <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></p>
+    <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span>${b.loyalty_applied > 0 ? ` · 🎁 <strong>${money(b.loyalty_applied, shop.currency)} loyalty reward applied</strong>` : ''}${b.group_id ? ` · 👥 <strong>Group booking</strong>${b.room ? ` (${esc(b.room)})` : ''}` : ''}</p>
     <div class="grid g2" style="align-items:start">
       <div>${bookingForm(shop, staff, services, clients, `/dashboard/bookings/${b.id}/edit`, 'Save changes', v)}</div>
       ${historyPanel}
@@ -708,6 +733,86 @@ app.post('/bookings/:id/edit', async (c) => {
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
   }
   return c.redirect(`/dashboard/roster?week=${rosterWeekOf(r.date)}`)
+})
+
+// ─── Group / couples booking ─────────────────────────────────────────────────
+const GUEST_ROWS = 6
+function guestRow(i, staff, services) {
+  return `<div class="guestrow card" style="padding:14px 16px;margin-bottom:10px;${i < 2 ? '' : 'display:none'}">
+    <div class="inline" style="justify-content:space-between"><strong>Guest ${i + 1}</strong>${i >= 2 ? `<button type="button" class="btn ghost sm rmguest">Remove</button>` : ''}</div>
+    <div class="row" style="margin-top:8px">
+      <div class="field"><label>Name</label><input name="guest_name_${i}" placeholder="Walk-in"></div>
+      <div class="field"><label>Phone <span class="muted">(optional)</span></label><input name="guest_phone_${i}"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Service</label><select name="guest_service_${i}"><option value="">— none —</option>${services.map(s => `<option value="${s.id}">${esc(s.name)} · ${s.duration_minutes}min</option>`).join('')}</select></div>
+      <div class="field"><label>Therapist</label><select name="guest_staff_${i}">${staff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
+    </div>
+  </div>`
+}
+
+app.get('/bookings/group/new', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query('date') || '') ? c.req.query('date') : dateTzString(new Date(), shop.timezone)
+  const staff = (await db.prepare('SELECT id,name,emoji FROM staff WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  const services = (await db.prepare('SELECT id,name,duration_minutes FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  if (!staff.length || !services.length) return shell(c, 'bookings', 'Group booking', `<h2>Group / couples booking</h2><p class="muted">Add at least one <a href="/dashboard/staff">therapist</a> and one <a href="/dashboard/services">service</a> first.</p>`)
+  const rooms = ((await db.prepare("SELECT DISTINCT room FROM bookings WHERE shop_id=? AND room IS NOT NULL AND room<>'' ORDER BY room").bind(shop.id).all()).results || []).map(r => r.room)
+
+  return shell(c, 'bookings', 'Group booking', `
+    <a href="/dashboard/roster" class="muted">← Back to roster</a>
+    <h2>👥 Group / couples booking</h2>
+    <p class="muted" style="margin-top:-6px">Book two or more people into the same time slot (e.g. a couples massage). Each guest gets their own service &amp; therapist; they’re linked as a group and can share a room.</p>
+    <form method="post" action="/dashboard/bookings/group/new" style="max-width:640px">
+      <div class="card" style="padding:18px;margin-bottom:14px">
+        <div class="row">
+          <div class="field"><label>Date</label><input type="date" name="date" value="${date}" required></div>
+          <div class="field"><label>Start time</label><input type="time" name="start" step="300" value="10:00" required></div>
+          <div class="field"><label>Room <span class="muted">(optional)</span></label><input name="room" list="roomlist" placeholder="e.g. Couple Room 1"><datalist id="roomlist">${rooms.map(r => `<option value="${esc(r)}">`).join('')}</datalist></div>
+        </div>
+      </div>
+      ${Array.from({ length: GUEST_ROWS }, (_, i) => guestRow(i, staff, services)).join('')}
+      <button type="button" class="btn ghost sm" id="addguest">＋ Add another guest</button>
+      <div style="margin-top:16px"><button class="btn">Create group booking</button></div>
+    </form>
+    <script>
+    var rows=[].slice.call(document.querySelectorAll('.guestrow'));
+    document.getElementById('addguest').addEventListener('click',function(){for(var i=0;i<rows.length;i++){if(rows[i].style.display==='none'){rows[i].style.display='';break;}}});
+    document.querySelectorAll('.rmguest').forEach(function(b){b.addEventListener('click',function(){var row=b.closest('.guestrow');row.style.display='none';row.querySelectorAll('input').forEach(function(el){el.value='';});row.querySelectorAll('select').forEach(function(el){el.selectedIndex=0;});});});
+    </script>
+  `)
+})
+
+app.post('/bookings/group/new', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const f = await c.req.parseBody()
+  const date = (f.date || '').toString(), start = (f.start || '').toString()
+  const room = (f.room || '').toString().trim() || null
+  const back = `/dashboard/bookings/group/new${date ? `?date=${date}` : ''}`
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(start)) return c.redirect(back)
+  const startUnix = Math.floor(localToUtcMs(date, start, shop.timezone) / 1000)
+  const groupId = genId()
+  let made = 0
+  for (let i = 0; i < GUEST_ROWS; i++) {
+    const sid = (f[`guest_service_${i}`] || '').toString()
+    if (!sid) continue
+    const svc = await db.prepare('SELECT * FROM services WHERE id=? AND shop_id=? AND is_active=1').bind(sid, shop.id).first()
+    if (!svc) continue
+    const staffId = (f[`guest_staff_${i}`] || '').toString()
+    const stf = await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first()
+    if (!stf) continue
+    const name = (f[`guest_name_${i}`] || '').toString().trim() || 'Walk-in'
+    const phone = (f[`guest_phone_${i}`] || '').toString().trim()
+    const clientId = await findOrCreateClient(db, shop.id, { name, phone })
+    await db.prepare(`INSERT INTO bookings
+      (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
+       start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, lang, client_id, group_id, room)
+      VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 'confirmed', ?, 0, ?, ?, 'en', ?, ?, ?)`)
+      .bind(genId(), shop.id, svc.id, stf.id, name, phone, startUnix, startUnix + svc.duration_minutes * 60, svc.price_cents, svc.name, stf.name, clientId, groupId, room).run()
+    made++
+  }
+  if (!made) return c.redirect(back)
+  return c.redirect(`/dashboard/roster?view=day&date=${date}`)
 })
 
 // ─── Services ────────────────────────────────────────────────────────────────
@@ -942,6 +1047,16 @@ app.get('/settings', async (c) => {
         <div class="field"><label>Google review link</label><input name="google_review_url" value="${f('google_review_url')}" placeholder="https://g.page/r/…/review"></div>
         <p class="muted" style="font-size:.82rem;margin:0">After a visit, clients are asked for a review (kept in <a href="/dashboard/reviews">Reviews</a>). Happy clients (4–5★) are then offered this Google link. Get it from your Google Business Profile → “Ask for reviews”.</p>
       </div>
+      <div class="card" style="padding:22px;margin-bottom:18px">
+        <h3 style="margin-top:0">🎁 Loyalty program</h3>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" name="loyalty_enabled" value="1" style="width:auto" ${shop.loyalty_enabled ? 'checked' : ''}> Enable a loyalty reward</label>
+        <div class="row" style="margin-top:12px">
+          <div class="field"><label>Reward every (completed visits)</label><input type="number" name="loyalty_threshold" value="${f('loyalty_threshold', 5)}" min="1"></div>
+          <div class="field"><label>Reward type</label><select name="loyalty_type"><option value="amount" ${shop.loyalty_type !== 'percent' ? 'selected' : ''}>Amount off</option><option value="percent" ${shop.loyalty_type === 'percent' ? 'selected' : ''}>% off</option></select></div>
+          <div class="field"><label>Reward value (${shop.currency.toUpperCase()} or %)</label><input type="number" name="loyalty_value_input" value="${shop.loyalty_type === 'percent' ? (shop.loyalty_value || 10) : ((shop.loyalty_value || 2000) / 100)}" min="0" step="1"></div>
+        </div>
+        <p class="muted" style="font-size:.82rem;margin:0">e.g. every <strong>5</strong> completed visits earns <strong>$20 off</strong> (or a %). The reward can be applied on the client’s next booking.</p>
+      </div>
       <button class="btn">Save settings</button>
     </form>
   `)
@@ -958,13 +1073,18 @@ app.post('/settings', async (c) => {
   if (clash) slug = `${slug}-${shop.id.slice(0, 4)}`
 
   const interval = [5, 10, 15, 20, 30, 60].includes(parseInt(f.slot_interval_minutes)) ? parseInt(f.slot_interval_minutes) : 15
+  const loyType = f.loyalty_type === 'percent' ? 'percent' : 'amount'
+  const loyValIn = parseFloat(f.loyalty_value_input) || 0
+  const loyValue = loyType === 'percent' ? Math.max(0, Math.min(100, Math.round(loyValIn))) : Math.max(0, Math.round(loyValIn * 100))
   await db.prepare(`UPDATE shops SET name=?, emoji=?, tagline=?, about=?, slug=?, accent=?, phone=?, email=?,
-    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, google_review_url=? WHERE id=?`)
+    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, google_review_url=?,
+    loyalty_enabled=?, loyalty_threshold=?, loyalty_type=?, loyalty_value=? WHERE id=?`)
     .bind((f.name || shop.name).toString().trim(), (f.emoji || '💆').toString().trim() || '💆',
       (f.tagline || '').toString(), (f.about || '').toString(), slug, (f.accent || '#0f766e').toString(),
       (f.phone || '').toString(), (f.email || '').toString(), (f.address || '').toString(),
       (f.suburb || '').toString(), (f.state || '').toString(), (f.postcode || '').toString(),
-      (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, interval, (f.google_review_url || '').toString().trim() || null, shop.id).run()
+      (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, interval, (f.google_review_url || '').toString().trim() || null,
+      f.loyalty_enabled ? 1 : 0, Math.max(1, parseInt(f.loyalty_threshold) || 5), loyType, loyValue, shop.id).run()
   return c.redirect('/dashboard/settings')
 })
 
@@ -1069,6 +1189,7 @@ app.get('/clients/:id', async (c) => {
   const totMin = Math.round((tot?.secs || 0) / 60)
   const totTime = totMin >= 60 ? `${Math.floor(totMin / 60)}h ${totMin % 60}m` : `${totMin}m`
 
+  const loy = await loyaltyStatus(db, shop, cl)
   return shell(c, 'clients', cl.name, `
     <a href="/dashboard/clients" class="muted">← All clients</a>
     <div class="inline" style="justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:6px">
@@ -1084,6 +1205,9 @@ app.get('/clients/:id', async (c) => {
       <div class="card" style="padding:16px"><div class="muted">Total time</div><div class="stat">${totTime}</div></div>
       <div class="card" style="padding:16px"><div class="muted">Total pay</div><div class="stat">${money(tot?.spent || 0, shop.currency)}</div></div>
     </div>
+    ${loy.enabled ? `<div class="card" style="padding:14px 16px;margin:6px 0 0;background:#fdf7e8;border-color:#f0d9a8">
+      🎁 <strong>Loyalty:</strong> ${loy.completed} completed visit${loy.completed === 1 ? '' : 's'} · <strong>${loy.toward}/${loy.threshold}</strong> toward the next <strong>${loy.label}</strong>${loy.available > 0 ? ` · <span style="color:#8a6414;font-weight:700">${loy.available} reward${loy.available === 1 ? '' : 's'} ready 🎉</span>` : ''}
+    </div>` : ''}
     <div class="grid g2" style="margin-top:14px;align-items:start">
       <form method="post" action="/dashboard/clients/${cl.id}" class="card" style="padding:22px">
         <h3 style="margin-top:0">Details</h3>
