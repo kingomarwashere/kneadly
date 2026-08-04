@@ -101,6 +101,7 @@ app.get('/', async (c) => {
         <button class="btn ghost sm" onclick="navigator.clipboard.writeText(document.getElementById('link').value);this.textContent='Copied ✓'">Copy</button>
         <a class="btn ghost sm" href="${esc(link)}" target="_blank">Open</a>
       </div>
+      <p class="muted" style="margin:12px 0 0;font-size:.9rem">📍 <strong>Get bookings from Google Maps:</strong> in your <a href="https://business.google.com" target="_blank">Google Business Profile</a> → <strong>Edit profile → Booking / Appointment links</strong>, paste this link. Customers will see a <strong>“Book”</strong> button on your Maps listing.</p>
     </div>
 
     <div class="grid g3" style="margin-bottom:20px">
@@ -116,11 +117,6 @@ app.get('/', async (c) => {
         ${counts.staff === 0 ? '<li>Add a <a href="/dashboard/staff">therapist</a> with working hours.</li>' : ''}
       </ul></div>` : ''}
 
-    <div class="card" style="padding:20px;margin-bottom:20px;background:#f6f2ec;border-style:dashed">
-      <h3 style="margin:0 0 6px;font-size:1.05rem">📍 Get bookings from Google Maps</h3>
-      <p class="muted" style="margin:0 0 10px;font-size:.9rem">In your <a href="https://business.google.com" target="_blank">Google Business Profile</a> → <strong>Edit profile → Booking / Appointment links</strong>, paste this URL. Customers will see a <strong>“Book”</strong> button on your Maps listing.</p>
-      <div class="inline"><input value="${esc(link)}" readonly style="max-width:420px"><button class="btn ghost sm" onclick="navigator.clipboard.writeText('${esc(link)}');this.textContent='Copied ✓'">Copy link</button></div>
-    </div>
 
     <h3>Next appointments</h3>
     ${upcoming.length ? `<div class="card" style="padding:6px 18px"><table>
