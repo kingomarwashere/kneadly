@@ -679,7 +679,7 @@ app.get('/bookings/:id/edit', async (c) => {
   const historyPanel = `
     <div>
       <div class="inline" style="justify-content:space-between;align-items:center;gap:8px">
-        <h3 style="margin:0">${esc(b.customer_name || 'Walk-in')}</h3>
+        <h3 style="margin:0">${b.client_id ? `<a href="/dashboard/clients/${b.client_id}">${esc(b.customer_name || 'Walk-in')}</a>` : esc(b.customer_name || 'Walk-in')}</h3>
         ${b.client_id ? `<a class="btn ghost sm" href="/dashboard/clients/${b.client_id}">Full profile →</a>` : ''}
       </div>
       <div class="muted" style="font-size:.85rem;margin:2px 0 12px">${[b.customer_phone, b.customer_email].filter(Boolean).map(esc).join(' · ') || 'No contact on file'}</div>
@@ -1113,8 +1113,30 @@ app.get('/reviews', async (c) => {
   const rows = (await db.prepare('SELECT * FROM reviews WHERE shop_id=? ORDER BY created_at DESC LIMIT 300').bind(shop.id).all()).results || []
   const agg = await db.prepare('SELECT COUNT(*) n, COALESCE(AVG(rating),0) avg FROM reviews WHERE shop_id=?').bind(shop.id).first()
   const stars = (n) => `<span style="color:#e6a817;letter-spacing:1px">${'★'.repeat(n)}<span style="color:#d9d2c7">${'★'.repeat(5 - n)}</span></span>`
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
+  const reviewUrl = `${base}/${shop.slug}/review`
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&margin=12&data=${encodeURIComponent(reviewUrl)}`
   return shell(c, 'reviews', 'Reviews', `
     <h2>Reviews</h2>
+    <div class="card" style="padding:22px;margin-bottom:18px">
+      <h3 style="margin-top:0">⭐ Collect reviews</h3>
+      <div class="inline" style="gap:22px;align-items:flex-start;flex-wrap:wrap">
+        <div style="text-align:center">
+          <img src="${qrUrl}" alt="Review QR code" width="180" height="180" style="border:1px solid var(--line);border-radius:12px;background:#fff;padding:6px">
+          <div style="margin-top:8px"><a class="btn ghost sm" href="${qrUrl}&download=1" download="${esc(shop.slug)}-review-qr.png">Download QR</a></div>
+        </div>
+        <div style="flex:1;min-width:240px">
+          <p class="muted" style="margin:0 0 10px">Print this QR for your reception desk, or show it to a client after their massage. They scan it, leave a rating (kept here in <strong>Reviews</strong>), and happy clients (4–5★) are then sent to <strong>Google</strong> — so your Maps rating grows while you keep a copy of every review.</p>
+          <label>Your review link</label>
+          <div class="inline">
+            <input id="revlink" value="${esc(reviewUrl)}" readonly style="max-width:360px">
+            <button class="btn ghost sm" type="button" onclick="navigator.clipboard.writeText(document.getElementById('revlink').value);this.textContent='Copied ✓'">Copy</button>
+            <a class="btn ghost sm" href="${esc(reviewUrl)}" target="_blank">Open</a>
+          </div>
+          <p class="muted" style="font-size:.82rem;margin:10px 0 0">${shop.google_review_url ? '✅ Google review link is set — 4–5★ reviewers are sent there.' : `⚠️ <a href="/dashboard/settings">Add your Google review link</a> so happy clients are forwarded to Google Maps.`}</p>
+        </div>
+      </div>
+    </div>
     <div class="grid g3" style="margin-bottom:18px">
       <div class="card" style="padding:18px"><div class="muted">Average</div><div class="stat">${agg.n ? (Math.round(agg.avg * 10) / 10).toFixed(1) : '—'} <span style="font-size:1rem;color:#e6a817">★</span></div></div>
       <div class="card" style="padding:18px"><div class="muted">Total reviews</div><div class="stat">${agg.n}</div></div>
