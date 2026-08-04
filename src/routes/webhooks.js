@@ -36,16 +36,28 @@ app.post('/stripe', async (c) => {
       "UPDATE bookings SET status = 'confirmed', stripe_session_id = ?, stripe_payment_intent_id = ?, stripe_charge_id = ? WHERE id = ?"
     ).bind(session.id, session.payment_intent, chargeId, bookingId).run()
 
-    // Deposit paid → now email the customer (localized) + owner. Non-blocking.
-    const emailP = sendBookingEmails(c.env, bookingId)
+    // Group booking: the single deposit covers every guest — confirm them all.
+    const emailIds = [bookingId]
+    if (booking.group_id) {
+      const siblings = (await db.prepare("SELECT id FROM bookings WHERE group_id=? AND id<>? AND status='pending_payment'").bind(booking.group_id, bookingId).all()).results || []
+      if (siblings.length) {
+        await db.prepare("UPDATE bookings SET status='confirmed' WHERE group_id=? AND status='pending_payment'").bind(booking.group_id).run()
+        for (const s of siblings) emailIds.push(s.id)
+      }
+    }
+
+    // Deposit paid → email the customer(s) (localized) + owner. Non-blocking.
+    const emailP = Promise.all(emailIds.map(id => sendBookingEmails(c.env, id)))
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(emailP); else await emailP
   }
 
   if (event.type === 'checkout.session.expired') {
-    const bookingId = event.data.object.metadata?.booking_id
-    if (bookingId)
-      await db.prepare("UPDATE bookings SET status = 'cancelled' WHERE id = ? AND status = 'pending_payment'")
-        .bind(bookingId).run()
+    const meta = event.data.object.metadata || {}
+    if (meta.group_id) {
+      await db.prepare("UPDATE bookings SET status='cancelled' WHERE group_id=? AND status='pending_payment'").bind(meta.group_id).run()
+    } else if (meta.booking_id) {
+      await db.prepare("UPDATE bookings SET status='cancelled' WHERE id=? AND status='pending_payment'").bind(meta.booking_id).run()
+    }
   }
 
   return c.json({ ok: true })

@@ -338,38 +338,21 @@ app.post('/:slug/book', async (c) => {
     ? form.staff.toString() : slot.staffIds[0]
   const staffRow = await db.prepare('SELECT name FROM staff WHERE id = ?').bind(staffId).first()
 
-  const depositCents = Math.round(service.price_cents * shop.deposit_pct / 100)
-  const bookingId = genId()
-  const endUnix = startUnix + service.duration_minutes * 60
-  const status = depositCents > 0 && c.env.STRIPE_SECRET_KEY ? 'pending_payment' : 'confirmed'
-
-  // Save/refresh this person as a client so the shop can reselect them next time.
+  // Save/refresh the primary person as a client.
   const clientId = await findOrCreateClient(db, shop.id, { name, email, phone: (form.phone || '').toString() })
-
-  // If the customer picked a specific therapist (not "anyone available"), treat
-  // it as a request for that therapist.
+  // If the customer picked a specific therapist, treat it as a request.
   const requestedStaff = (form.staff && form.staff.toString() !== 'any') ? 1 : 0
 
-  // Couple / group booking: extra guests at the same start time. Groups skip the
-  // online deposit (confirmed, pay in store) to keep it simple.
-  const guests = [2, 3, 4].map(n => ({ sid: (form[`guest_service_${n}`] || '').toString(), name: (form[`guest_name_${n}`] || '').toString().trim() || `Guest ${n}` })).filter(g => g.sid)
-  const isGroup = guests.length > 0
+  // Couple / group booking: resolve each extra guest to a free therapist at the
+  // same start time. Build the full list of bookings to create (primary first).
+  const guestSpecs = [2, 3, 4].map(n => ({ sid: (form[`guest_service_${n}`] || '').toString(), name: (form[`guest_name_${n}`] || '').toString().trim() || `Guest ${n}` })).filter(g => g.sid)
+  const isGroup = guestSpecs.length > 0
   const groupId = isGroup ? genId() : null
-  const bStatus = isGroup ? 'confirmed' : status
-  const bDeposit = isGroup ? 0 : depositCents
 
-  await db.prepare(`INSERT INTO bookings
-    (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
-     start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff, group_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(bookingId, shop.id, service.id, staffId, name, email, (form.phone || '').toString(),
-      startUnix, endUnix, bStatus, service.price_cents, bDeposit, service.name, staffRow?.name || '', (form.notes || '').toString(), c.get('lang') || 'en', clientId, requestedStaff, groupId).run()
-
-  // Create the extra guests — each assigned a free therapist for their service at
-  // the same start time (best-effort; a guest is skipped if none are free).
+  const items = [{ service, staffId, staffName: staffRow?.name || '', name, email, phone: (form.phone || '').toString(), notes: (form.notes || '').toString(), clientId, requested: requestedStaff }]
   if (isGroup) {
     const usedIds = new Set([staffId])
-    for (const g of guests) {
+    for (const g of guestSpecs) {
       const gsvc = await db.prepare('SELECT * FROM services WHERE id=? AND shop_id=? AND is_active=1').bind(g.sid, shop.id).first()
       if (!gsvc) continue
       const gslot = (await slotsForDate(db, shop, gsvc, 'any', dateStr)).find(s => s.unix === startUnix)
@@ -378,17 +361,33 @@ app.post('/:slug/book', async (c) => {
       usedIds.add(gStaff)
       const gRow = await db.prepare('SELECT name FROM staff WHERE id=?').bind(gStaff).first()
       const gClient = await findOrCreateClient(db, shop.id, { name: g.name })
-      await db.prepare(`INSERT INTO bookings
-        (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
-         start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, lang, client_id, group_id)
-        VALUES (?, ?, ?, ?, ?, '', '', ?, ?, 'confirmed', ?, 0, ?, ?, ?, ?, ?)`)
-        .bind(genId(), shop.id, gsvc.id, gStaff, g.name, startUnix, startUnix + gsvc.duration_minutes * 60, gsvc.price_cents, gsvc.name, gRow?.name || '', c.get('lang') || 'en', gClient, groupId).run()
+      items.push({ service: gsvc, staffId: gStaff, staffName: gRow?.name || '', name: g.name, email: '', phone: '', notes: '', clientId: gClient, requested: 0 })
     }
   }
 
-  // Payment required → Stripe Checkout
-  if (bStatus === 'pending_payment') {
+  // Deposit is charged ONCE for the whole booking/group (sum of each person's).
+  const dep = (svc) => Math.round(svc.price_cents * shop.deposit_pct / 100)
+  const totalDeposit = items.reduce((s, it) => s + dep(it.service), 0)
+  const useStripe = shop.deposit_pct > 0 && !!c.env.STRIPE_SECRET_KEY && totalDeposit > 0
+  const status = useStripe ? 'pending_payment' : 'confirmed'
+
+  // Insert every booking (own price + own deposit share + shared group_id).
+  const ids = []
+  for (const it of items) {
+    const id = genId(); ids.push(id)
+    await db.prepare(`INSERT INTO bookings
+      (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
+       start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff, group_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, shop.id, it.service.id, it.staffId, it.name, it.email, it.phone,
+        startUnix, startUnix + it.service.duration_minutes * 60, status, it.service.price_cents, dep(it.service), it.service.name, it.staffName, it.notes, c.get('lang') || 'en', it.clientId, it.requested, groupId).run()
+  }
+  const bookingId = ids[0]
+
+  // One Stripe deposit for the whole booking/group; the webhook confirms all of it.
+  if (status === 'pending_payment') {
     const base = c.env.BASE_URL || 'https://alisa.bored.investments'
+    const label = items.length > 1 ? `Deposit — ${items.length} appointments at ${shop.name}` : `Deposit — ${service.name} at ${shop.name}`
     try {
       const session = await stripeClient(c.env.STRIPE_SECRET_KEY).createCheckoutSession({
         mode: 'payment',
@@ -399,25 +398,25 @@ app.post('/:slug/book', async (c) => {
           quantity: 1,
           price_data: {
             currency: shop.currency,
-            unit_amount: depositCents,
-            product_data: { name: `Deposit — ${service.name} at ${shop.name}`, description: `${formatBookingTime(startUnix, shop.timezone)} with ${staffRow?.name || 'our team'}` }
+            unit_amount: totalDeposit,
+            product_data: { name: label, description: `${formatBookingTime(startUnix, shop.timezone)}${items.length > 1 ? ` · ${items.length} people` : ` with ${staffRow?.name || 'our team'}`}` }
           }
         }],
-        metadata: { booking_id: bookingId },
+        metadata: { booking_id: bookingId, group_id: groupId || '' },
         expires_at: Math.floor(Date.now() / 1000) + 1800
       })
       await db.prepare('UPDATE bookings SET stripe_session_id = ? WHERE id = ?').bind(session.id, bookingId).run()
       return c.redirect(session.url)
     } catch (err) {
       console.error('Stripe error:', err.message)
-      // Fall back to a confirmed (unpaid) booking so the customer isn't stuck
-      await db.prepare("UPDATE bookings SET status = 'confirmed' WHERE id = ?").bind(bookingId).run()
+      // Fall back to confirmed (unpaid) for the whole group so nobody is stuck.
+      if (groupId) await db.prepare("UPDATE bookings SET status='confirmed' WHERE group_id=?").bind(groupId).run()
+      else await db.prepare("UPDATE bookings SET status='confirmed' WHERE id=?").bind(bookingId).run()
     }
   }
 
-  // Email the customer (localized) + owner for confirmed bookings. Deposit
-  // bookings that went to Stripe are emailed from the webhook instead; this
-  // helper no-ops unless the booking is already confirmed. Never blocks/fails.
+  // Email the customer + owner for confirmed bookings (Stripe ones email from the
+  // webhook). Never blocks/fails.
   const emailP = sendBookingEmails(c.env, bookingId)
   if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(emailP); else await emailP
 
@@ -436,10 +435,12 @@ app.get('/:slug/booked/:id', async (c) => {
   b.service_name = await translate(c.env, b.service_name, lang)
 
   // Other guests in the same group (couples/group booking).
-  let groupMembers = []
+  let groupMembers = [], groupTotalPrice = 0, groupTotalDeposit = 0
   if (b.group_id) {
-    groupMembers = (await db.prepare('SELECT customer_name, service_name, staff_name FROM bookings WHERE group_id=? AND id<>? ORDER BY customer_name').bind(b.group_id, b.id).all()).results || []
+    groupMembers = (await db.prepare('SELECT customer_name, service_name, staff_name, price_cents, deposit_cents FROM bookings WHERE group_id=? AND id<>? ORDER BY customer_name').bind(b.group_id, b.id).all()).results || []
     await Promise.all(groupMembers.map(async m => { m.service_name = await translate(c.env, m.service_name, lang) }))
+    groupTotalPrice = b.price_cents + groupMembers.reduce((s, m) => s + (m.price_cents || 0), 0)
+    groupTotalDeposit = b.deposit_cents + groupMembers.reduce((s, m) => s + (m.deposit_cents || 0), 0)
   }
   // This customer's loyalty progress.
   let loy = { enabled: false }
@@ -461,13 +462,16 @@ app.get('/:slug/booked/:id', async (c) => {
     <div class="card" style="padding:22px;text-align:left;margin-top:18px">
       <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_service')}</span><strong>${esc(b.service_name)}</strong></div>
       <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_therapist')}</span><strong>${esc(b.staff_name || t(lang, 'our_team'))}</strong></div>
-      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_when')}</span><strong>${formatBookingTime(b.start_time, shop.timezone)}</strong></div>
-      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_price')}</span><strong>${money(b.price_cents, shop.currency)}</strong></div>
-      ${b.deposit_cents > 0 ? `<div style="display:flex;justify-content:space-between;padding:8px 0"><span class="muted">${t(lang, 'c_deposit_paid')}</span><strong>${money(b.deposit_cents, shop.currency)}</strong></div>` : ''}
+      <div style="display:flex;justify-content:space-between;padding:8px 0${b.group_id ? '' : ';border-bottom:1px solid var(--line)'}"><span class="muted">${t(lang, 'c_when')}</span><strong>${formatBookingTime(b.start_time, shop.timezone)}</strong></div>
+      ${b.group_id ? '' : `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_price')}</span><strong>${money(b.price_cents, shop.currency)}</strong></div>`}
+      ${(b.deposit_cents > 0 && !b.group_id) ? `<div style="display:flex;justify-content:space-between;padding:8px 0"><span class="muted">${t(lang, 'c_deposit_paid')}</span><strong>${money(b.deposit_cents, shop.currency)}</strong></div>` : ''}
     </div>
     ${groupMembers.length ? `<div class="card" style="padding:16px 20px;text-align:left;margin-top:14px">
       <div style="font-weight:600;margin-bottom:4px">👥 ${t(lang, 'group_booked', { n: groupMembers.length + 1 })}</div>
-      ${groupMembers.map(m => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span>${esc(m.customer_name)}</span><span class="muted">${esc(m.service_name)} · ${esc(m.staff_name || '')}</span></div>`).join('')}
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span>${esc(b.customer_name)}</span><span class="muted">${esc(b.service_name)} · ${esc(b.staff_name || '')} · ${money(b.price_cents, shop.currency)}</span></div>
+      ${groupMembers.map(m => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span>${esc(m.customer_name)}</span><span class="muted">${esc(m.service_name)} · ${esc(m.staff_name || '')} · ${money(m.price_cents, shop.currency)}</span></div>`).join('')}
+      <div style="display:flex;justify-content:space-between;padding:8px 0 0;border-top:2px solid var(--line);margin-top:4px;font-weight:700"><span>${t(lang, 'group_total', { n: groupMembers.length + 1 })}</span><span>${money(groupTotalPrice, shop.currency)}</span></div>
+      ${groupTotalDeposit > 0 ? `<div style="display:flex;justify-content:space-between;padding:6px 0 0"><span class="muted">${t(lang, 'c_deposit_paid')}</span><strong>${money(groupTotalDeposit, shop.currency)}</strong></div>` : ''}
     </div>` : ''}
     ${loy.enabled ? `<div class="card" style="padding:16px 20px;text-align:left;margin-top:14px;background:#fdf7e8;border-color:#f0d9a8">
       <div style="font-weight:600">${t(lang, 'loyalty_head')}</div>
