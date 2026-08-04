@@ -641,11 +641,52 @@ app.get('/bookings/:id/edit', async (c) => {
     price: b.price_cents ? b.price_cents / 100 : 0, client_id: b.client_id || '', requested_staff: b.requested_staff,
     customer_name: b.customer_name, customer_email: b.customer_email, customer_phone: b.customer_phone, notes: b.notes,
   }
+
+  // This client's payment + service history (matched by client_id OR email).
+  const email = b.customer_email || ''
+  const hist = (await db.prepare(
+    `SELECT * FROM bookings WHERE shop_id=? AND (client_id=? OR (? <> '' AND lower(customer_email)=lower(?))) ORDER BY start_time DESC LIMIT 60`
+  ).bind(shop.id, b.client_id || '', email, email).all()).results || []
+  const tot = await db.prepare(
+    `SELECT COUNT(*) visits, COALESCE(SUM(end_time-start_time),0) secs, COALESCE(SUM(price_cents),0) spent
+     FROM bookings WHERE shop_id=? AND (client_id=? OR (? <> '' AND lower(customer_email)=lower(?))) AND status IN ('confirmed','completed')`
+  ).bind(shop.id, b.client_id || '', email, email).first()
+  const totMin = Math.round((tot?.secs || 0) / 60)
+  const totTime = totMin >= 60 ? `${Math.floor(totMin / 60)}h ${totMin % 60}m` : `${totMin}m`
+
+  const historyPanel = `
+    <div>
+      <div class="inline" style="justify-content:space-between;align-items:center;gap:8px">
+        <h3 style="margin:0">${esc(b.customer_name || 'Walk-in')}</h3>
+        ${b.client_id ? `<a class="btn ghost sm" href="/dashboard/clients/${b.client_id}">Full profile →</a>` : ''}
+      </div>
+      <div class="muted" style="font-size:.85rem;margin:2px 0 12px">${[b.customer_phone, b.customer_email].filter(Boolean).map(esc).join(' · ') || 'No contact on file'}</div>
+      <div class="grid g3" style="margin-bottom:14px">
+        <div class="card" style="padding:14px"><div class="muted" style="font-size:.8rem">Visits</div><div class="stat" style="font-size:1.5rem">${tot?.visits || 0}</div></div>
+        <div class="card" style="padding:14px"><div class="muted" style="font-size:.8rem">Total time</div><div class="stat" style="font-size:1.5rem">${totTime}</div></div>
+        <div class="card" style="padding:14px"><div class="muted" style="font-size:.8rem">Total pay</div><div class="stat" style="font-size:1.5rem">${money(tot?.spent || 0, shop.currency)}</div></div>
+      </div>
+      <h4 style="margin:0 0 6px">Payment &amp; service history</h4>
+      ${hist.length ? `<div class="card" style="padding:6px 16px;max-height:440px;overflow:auto"><table>
+        <tr><th>When</th><th>Service</th><th>Price</th><th>Deposit</th><th>Status</th></tr>
+        ${hist.map(h => `<tr${h.id === b.id ? ' style="background:#f4faf8"' : ''}>
+          <td>${esc(formatBookingTime(h.start_time, shop.timezone))}</td>
+          <td>${h.requested_staff ? '❤️ ' : ''}${esc(h.service_name || '')}</td>
+          <td>${money(h.price_cents, shop.currency)}</td>
+          <td>${h.deposit_cents ? money(h.deposit_cents, shop.currency) : '—'}${h.refunded_at ? ' <span class="muted" style="font-size:.7rem">(refunded)</span>' : ''}</td>
+          <td><span class="tag ${h.status}">${h.status.replace('_', ' ')}</span></td>
+        </tr>`).join('')}
+      </table></div>` : '<p class="muted">No history yet.</p>'}
+    </div>`
+
   return shell(c, 'bookings', 'Edit booking', `
-    <a href="/dashboard/bookings" class="muted">← Back to bookings</a>
+    <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Edit / reschedule booking</h2>
     <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></p>
-    ${bookingForm(shop, staff, services, clients, `/dashboard/bookings/${b.id}/edit`, 'Save changes', v)}
+    <div class="grid g2" style="align-items:start">
+      <div>${bookingForm(shop, staff, services, clients, `/dashboard/bookings/${b.id}/edit`, 'Save changes', v)}</div>
+      ${historyPanel}
+    </div>
   `)
 })
 
