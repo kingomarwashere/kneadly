@@ -6,6 +6,7 @@ import { stripeClient } from '../lib/stripe.js'
 import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTherapistInvite, sendReviewRequest } from '../lib/email.js'
 import { findOrCreateClient } from '../lib/clients.js'
 import { loyaltyStatus, tierDiscount, tierLabel, getTiers, loyaltyAvailByClient } from '../lib/loyalty.js'
+import { freeTherapist } from '../lib/booking.js'
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -433,17 +434,26 @@ async function bookingAction(c, action) {
   }
   if (action === 'no_show') await db.prepare("UPDATE bookings SET status='no_show' WHERE id=?").bind(id).run()
   if (action === 'cancel') {
-    if (b.deposit_cents && b.stripe_charge_id && !b.refunded_at && c.env.STRIPE_SECRET_KEY) {
+    // A group booking cancels as one: cancel every member, refund the single
+    // group deposit once, restore each person's loyalty, and email each guest.
+    let targets = b.group_id
+      ? (await db.prepare("SELECT * FROM bookings WHERE group_id=? AND shop_id=? AND status IN ('confirmed','pending_payment')").bind(b.group_id, shop.id).all()).results || []
+      : [b]
+    if (!targets.length) targets = [b]
+    const charged = targets.find(x => x.stripe_charge_id && !x.refunded_at)
+    if (charged && c.env.STRIPE_SECRET_KEY) {
       try {
-        await stripeClient(c.env.STRIPE_SECRET_KEY).createRefund({ charge: b.stripe_charge_id, reason: 'requested_by_customer' })
-        await db.prepare("UPDATE bookings SET refunded_at = unixepoch() WHERE id=?").bind(id).run()
+        await stripeClient(c.env.STRIPE_SECRET_KEY).createRefund({ charge: charged.stripe_charge_id, reason: 'requested_by_customer' })
+        await db.prepare("UPDATE bookings SET refunded_at = unixepoch() WHERE id=?").bind(charged.id).run()
       } catch (e) { console.error('refund failed:', e.message) }
     }
-    await db.prepare("UPDATE bookings SET status='cancelled' WHERE id=?").bind(id).run()
-    // Give the loyalty reward back if this booking had used one.
-    if (b.loyalty_applied > 0) await db.prepare('DELETE FROM loyalty_redemptions WHERE booking_id=?').bind(id).run()
-    // Tell the customer (localized), noting the refund if one was issued. Non-blocking.
-    const emailP = sendCancellationEmail(c.env, id)
+    const emailIds = []
+    for (const x of targets) {
+      await db.prepare("UPDATE bookings SET status='cancelled' WHERE id=?").bind(x.id).run()
+      if (x.loyalty_applied > 0) await db.prepare('DELETE FROM loyalty_redemptions WHERE booking_id=?').bind(x.id).run()
+      if (x.customer_email) emailIds.push(x.id)
+    }
+    const emailP = Promise.all(emailIds.map(eid => sendCancellationEmail(c.env, eid)))
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(emailP); else await emailP
   }
   return c.redirect('/dashboard/bookings')
@@ -465,7 +475,7 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
     <form method="post" action="${action}" class="card" style="padding:22px;max-width:580px">
       <div class="row">
         <div class="field"><label>Date</label><input type="date" name="date" value="${v.date || ''}" required></div>
-        <div class="field"><label>Therapist</label><select name="staff_id" required>${staff.map(s => `<option value="${s.id}" ${v.staff_id === s.id ? 'selected' : ''}>${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Therapist</label><select name="staff_id" required><option value="any" ${!v.staff_id || v.staff_id === 'any' ? 'selected' : ''}>✨ Any available</option>${staff.map(s => `<option value="${s.id}" ${v.staff_id === s.id ? 'selected' : ''}>${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
       </div>
       <div class="field"><label>Service</label>
         <select name="service_id" id="svc">
@@ -546,19 +556,23 @@ async function resolveBookingInput(c, shop) {
   const db = c.env.DB, f = await c.req.parseBody()
   const date = (f.date || '').toString(), startT = (f.start || '').toString(), endT = (f.end || '').toString()
   const staffId = (f.staff_id || '').toString()
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(startT) || !/^\d{1,2}:\d{2}$/.test(endT) || !staffId) return { error: true, date }
-  const staff = await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first()
-  if (!staff) return { error: true, date }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(startT) || !/^\d{1,2}:\d{2}$/.test(endT)) return { error: true, date }
   const startUnix = Math.floor(localToUtcMs(date, startT, shop.timezone) / 1000)
   const endUnix = Math.floor(localToUtcMs(date, endT, shop.timezone) / 1000)
   if (endUnix <= startUnix) return { error: true, date }
 
   // service_id is a NOT NULL foreign key D1 enforces, so anchor to a real row.
   const customName = (f.custom_name || '').toString().trim()
-  let sv = f.service_id ? await db.prepare('SELECT id,name,price_cents FROM services WHERE id=? AND shop_id=?').bind(f.service_id.toString(), shop.id).first() : null
+  let sv = f.service_id ? await db.prepare('SELECT id,name,price_cents,duration_minutes FROM services WHERE id=? AND shop_id=?').bind(f.service_id.toString(), shop.id).first() : null
   const explicit = !!sv
-  if (!sv) sv = await db.prepare('SELECT id,name,price_cents FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at LIMIT 1').bind(shop.id).first()
+  if (!sv) sv = await db.prepare('SELECT id,name,price_cents,duration_minutes FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at LIMIT 1').bind(shop.id).first()
   if (!sv) return { error: true, date }
+
+  // Therapist: a specific one, or "any available" → assign a free eligible one.
+  let staff = (staffId && staffId !== 'any') ? await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first() : null
+  if (!staff) staff = await freeTherapist(db, shop, sv, startUnix, endUnix)
+  if (!staff) return { error: true, date }
+
   const priceStr = (f.price || '').toString().trim()
   const priceCents = priceStr !== '' ? Math.max(0, Math.round(parseFloat(priceStr) * 100) || 0) : (explicit ? sv.price_cents : 0)
 
@@ -711,6 +725,11 @@ app.get('/bookings/:id/edit', async (c) => {
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Edit / reschedule booking</h2>
     <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span>${b.loyalty_applied > 0 ? ` · 🎁 <strong>${money(b.loyalty_applied, shop.currency)} loyalty reward applied</strong>` : ''}${b.group_id ? ` · 👥 <strong>Group booking</strong>${b.room ? ` (${esc(b.room)})` : ''}` : ''}</p>
+    ${['confirmed', 'pending_payment'].includes(b.status) ? `<div class="inline" style="gap:8px;margin:0 0 14px;flex-wrap:wrap">
+      <form method="post" action="/dashboard/bookings/${b.id}/complete"><button class="btn sm">✓ Mark done</button></form>
+      <form method="post" action="/dashboard/bookings/${b.id}/no_show"><button class="btn ghost sm">No-show</button></form>
+      <form method="post" action="/dashboard/bookings/${b.id}/cancel" onsubmit="return confirm('${b.group_id ? 'Cancel the whole group booking' : 'Cancel this booking'}${b.stripe_charge_id ? ' and refund the deposit' : ''}?')"><button class="btn danger sm">✕ Cancel booking</button></form>
+    </div>` : ''}
     <div class="grid g2" style="align-items:start">
       <div>${bookingForm(shop, staff, services, clients, `/dashboard/bookings/${b.id}/edit`, 'Save changes', v)}</div>
       ${historyPanel}
@@ -748,9 +767,10 @@ function guestRow(i, staff, services) {
       <div class="field"><label>Phone <span class="muted">(optional)</span></label><input name="guest_phone_${i}"></div>
     </div>
     <div class="row">
-      <div class="field"><label>Service</label><select name="guest_service_${i}"><option value="">— none —</option>${services.map(s => `<option value="${s.id}">${esc(s.name)} · ${s.duration_minutes}min</option>`).join('')}</select></div>
-      <div class="field"><label>Therapist</label><select name="guest_staff_${i}">${staff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Service</label><select name="guest_service_${i}" class="gsvc"><option value="">— none —</option>${services.map(s => `<option value="${s.id}" data-dur="${s.duration_minutes}">${esc(s.name)} · ${s.duration_minutes}min</option>`).join('')}</select></div>
+      <div class="field"><label>Therapist</label><select name="guest_staff_${i}"><option value="any">✨ Any available</option>${staff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
     </div>
+    <div class="muted gtime" style="font-size:.82rem;margin-top:2px"></div>
   </div>`
 }
 
@@ -781,7 +801,16 @@ app.get('/bookings/group/new', async (c) => {
     <script>
     var rows=[].slice.call(document.querySelectorAll('.guestrow'));
     document.getElementById('addguest').addEventListener('click',function(){for(var i=0;i<rows.length;i++){if(rows[i].style.display==='none'){rows[i].style.display='';break;}}});
-    document.querySelectorAll('.rmguest').forEach(function(b){b.addEventListener('click',function(){var row=b.closest('.guestrow');row.style.display='none';row.querySelectorAll('input').forEach(function(el){el.value='';});row.querySelectorAll('select').forEach(function(el){el.selectedIndex=0;});});});
+    document.querySelectorAll('.rmguest').forEach(function(b){b.addEventListener('click',function(){var row=b.closest('.guestrow');row.style.display='none';row.querySelectorAll('input').forEach(function(el){el.value='';});row.querySelectorAll('select').forEach(function(el){el.selectedIndex=0;});updTimes();});});
+    // Show each guest's time (shared start + their service duration).
+    var startEl=document.querySelector('input[name=start]');
+    function fmt(m){return (''+Math.floor(m/60)).padStart(2,'0')+':'+(''+(m%60)).padStart(2,'0');}
+    function updTimes(){var v=startEl&&startEl.value?startEl.value.split(':').map(Number):null;if(!v)return;var sm=v[0]*60+v[1];
+      rows.forEach(function(row){var sel=row.querySelector('.gsvc'),o=sel&&sel.selectedOptions[0],d=o&&o.dataset.dur?+o.dataset.dur:0,g=row.querySelector('.gtime');
+        if(g)g.textContent=d?('🕐 '+fmt(sm)+'–'+fmt(Math.min(sm+d,1439))+' · '+d+' min'):'';});}
+    if(startEl)startEl.addEventListener('change',updTimes);
+    document.querySelectorAll('.gsvc').forEach(function(s){s.addEventListener('change',updTimes);});
+    updTimes();
     </script>
   `)
 })
@@ -795,15 +824,21 @@ app.post('/bookings/group/new', async (c) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(start)) return c.redirect(back)
   const startUnix = Math.floor(localToUtcMs(date, start, shop.timezone) / 1000)
   const groupId = genId()
+  const usedIds = new Set()
   let made = 0
   for (let i = 0; i < GUEST_ROWS; i++) {
     const sid = (f[`guest_service_${i}`] || '').toString()
     if (!sid) continue
     const svc = await db.prepare('SELECT * FROM services WHERE id=? AND shop_id=? AND is_active=1').bind(sid, shop.id).first()
     if (!svc) continue
+    const endUnix = startUnix + svc.duration_minutes * 60
+    // Therapist: a specific one, or "any available" → assign a free eligible one
+    // that isn't already used elsewhere in this group.
     const staffId = (f[`guest_staff_${i}`] || '').toString()
-    const stf = await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first()
+    let stf = (staffId && staffId !== 'any') ? await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first() : null
+    if (!stf) stf = await freeTherapist(db, shop, svc, startUnix, endUnix, usedIds)
     if (!stf) continue
+    usedIds.add(stf.id)
     const name = (f[`guest_name_${i}`] || '').toString().trim() || 'Walk-in'
     const phone = (f[`guest_phone_${i}`] || '').toString().trim()
     const clientId = await findOrCreateClient(db, shop.id, { name, phone })
@@ -811,7 +846,7 @@ app.post('/bookings/group/new', async (c) => {
       (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
        start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, lang, client_id, group_id, room)
       VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 'confirmed', ?, 0, ?, ?, 'en', ?, ?, ?)`)
-      .bind(genId(), shop.id, svc.id, stf.id, name, phone, startUnix, startUnix + svc.duration_minutes * 60, svc.price_cents, svc.name, stf.name, clientId, groupId, room).run()
+      .bind(genId(), shop.id, svc.id, stf.id, name, phone, startUnix, endUnix, svc.price_cents, svc.name, stf.name, clientId, groupId, room).run()
     made++
   }
   if (!made) return c.redirect(back)

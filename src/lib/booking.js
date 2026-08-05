@@ -18,6 +18,31 @@ export async function eligibleStaff(db, shopId, serviceId) {
   return all.results || []
 }
 
+// Pick a therapist for "any available": prefers one eligible for the service who
+// works that day, isn't on time-off, and has no overlapping booking. Falls back
+// to any eligible not-excluded therapist (owner override / over-book). Works for
+// custom times too (not slot-aligned). Returns {id,name} or null.
+export async function freeTherapist(db, shop, service, startUnix, endUnix, excludeIds = new Set()) {
+  const eligible = await eligibleStaff(db, shop.id, service.id)
+  const dateStr = dateTzString(new Date(startUnix * 1000), shop.timezone)
+  const dow = getDayOfWeek(dateStr, shop.timezone)
+  let fallback = null
+  for (const st of eligible) {
+    if (excludeIds.has(st.id)) continue
+    if (!fallback) fallback = st
+    const avail = await db.prepare('SELECT 1 FROM availability WHERE staff_id=? AND day_of_week=?').bind(st.id, dow).first()
+    if (!avail) continue
+    const off = await db.prepare('SELECT 1 FROM time_off WHERE staff_id=? AND date=?').bind(st.id, dateStr).first()
+    if (off) continue
+    const conflict = await db.prepare(
+      "SELECT 1 FROM bookings WHERE staff_id=? AND status IN ('pending_payment','confirmed','completed') AND start_time < ? AND end_time > ?"
+    ).bind(st.id, endUnix, startUnix).first()
+    if (conflict) continue
+    return { id: st.id, name: st.name }   // fully free
+  }
+  return fallback ? { id: fallback.id, name: fallback.name } : null
+}
+
 // Free time-slots for a date. Returns [{ time, unix, display, staffIds:[...] }]
 // staffIds = the therapists actually free at that moment (used to assign "any").
 export async function slotsForDate(db, shop, service, staffId, dateStr) {
