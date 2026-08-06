@@ -14,7 +14,9 @@ export function shopHoursFor(shop, dow) {
   if (!shop || !shop.hours_json) return undefined
   let h
   try { h = JSON.parse(shop.hours_json) } catch { return undefined }
-  if (!h || typeof h !== 'object') return undefined
+  // No object, or an EMPTY object = "not configured" → no constraint (never treat
+  // an empty hours map as "closed every day", which would hide all availability).
+  if (!h || typeof h !== 'object' || !Object.keys(h).length) return undefined
   const v = h[dow] ?? h[String(dow)]
   if (!v || !v[0] || !v[1]) return null
   return { open: v[0], close: v[1] }
@@ -272,6 +274,31 @@ export async function groupSlotsForDate(db, shop, party, dateStr) {
     if (assignPartyAt(ctx, people, T)) {
       const h = Math.floor(m / 60)
       out.push({ unix: T, display: `${(h % 12) || 12}:${pad(m % 60)} ${h < 12 ? 'AM' : 'PM'}` })
+    }
+  }
+  return out
+}
+
+// Available START times (HH:MM) on a date for a specific therapist (or 'any'),
+// for a service of `durMin` minutes. Used by the dashboard "Add booking" form so
+// staff can only pick times a therapist is genuinely free (not past, not closed).
+export async function availStartTimes(db, shop, dateStr, staffPref, durMin, serviceId = '') {
+  const ctx = await dayContext(db, shop, dateStr)
+  if (ctx.shopClosed) return []
+  const wins = Object.values(ctx.availByStaff)
+  if (!wins.length) return []
+  const interval = Math.max(5, Number(shop.slot_interval_minutes) || 15)
+  const dur = Math.max(5, Number(durMin) || 60)
+  const gridStartMin = Math.min(...wins.map(w => w.sMin)), gridEndMin = Math.max(...wins.map(w => w.eMin))
+  const now = Math.floor(Date.now() / 1000) + 30 * 60
+  const pad = n => String(n).padStart(2, '0')
+  const out = []
+  for (let m = gridStartMin; m + dur <= gridEndMin; m += interval) {
+    const T = Math.floor(localToUtcMs(dateStr, `${pad(Math.floor(m / 60))}:${pad(m % 60)}`, ctx.tz) / 1000)
+    if (T < now) continue
+    if (freeStaffFor(ctx, serviceId, dur * 60, T, staffPref).length) {
+      const h = Math.floor(m / 60)
+      out.push({ hm: `${pad(h)}:${pad(m % 60)}`, display: `${(h % 12) || 12}:${pad(m % 60)} ${h < 12 ? 'AM' : 'PM'}` })
     }
   }
   return out

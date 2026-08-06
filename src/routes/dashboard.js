@@ -6,7 +6,7 @@ import { stripeClient } from '../lib/stripe.js'
 import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTherapistInvite, sendReviewRequest } from '../lib/email.js'
 import { findOrCreateClient } from '../lib/clients.js'
 import { loyaltyStatus, tierDiscount, tierLabel, getTiers, loyaltyAvailByClient } from '../lib/loyalty.js'
-import { freeTherapist, therapistFreeAt, shopHoursFor } from '../lib/booking.js'
+import { freeTherapist, therapistFreeAt, shopHoursFor, availStartTimes } from '../lib/booking.js'
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -511,9 +511,9 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
           ${services.map(s => `<option value="${s.id}" data-dur="${s.duration_minutes}" data-price="${s.price_cents}" ${v.service_id === s.id ? 'selected' : ''}>${esc(s.name)} · ${s.duration_minutes} min</option>`).join('')}
         </select>
       </div>
-      <div class="row">
-        <div class="field"><label>Start time</label><input type="time" name="start" id="st" step="300" value="${v.start || '09:00'}" required></div>
-        <div class="field"><label>End time</label><input type="time" name="end" id="et" step="300" value="${v.end || '10:00'}" required></div>
+      <div class="row" style="max-width:360px">
+        <div class="field" style="flex:0 0 165px"><label>Start time <span class="muted">(available)</span></label><select name="start" id="st" required><option value="${v.start || '09:00'}">${v.start || '09:00'}</option></select></div>
+        <div class="field" style="flex:0 0 150px"><label>End time</label><input type="time" name="end" id="et" step="300" value="${v.end || '10:00'}" required></div>
       </div>
       <div class="row">
         <div class="field"><label>Custom label <span class="muted">(optional)</span></label><input name="custom_name" value="${esc(v.custom_name || '')}" placeholder="e.g. Extended session"></div>
@@ -551,11 +551,29 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
     // Picking a service auto-fills the end time (start + duration) and price,
     // but both stay fully editable — that's the point of custom bookings.
     const svc=document.getElementById('svc'),st=document.getElementById('st'),et=document.getElementById('et'),pr=document.getElementById('pr'),clbl=document.querySelector('[name=custom_name]');
+    const dateEl=document.querySelector('[name=date]'),staffEl=document.querySelector('[name=staff_id]');
+    var EDITING=${v.editing ? 'true' : 'false'};
     function fillEnd(){const o=svc.selectedOptions[0],d=o&&o.dataset.dur?+o.dataset.dur:0;if(!d||!st.value)return;const p=st.value.split(':').map(Number);let t=Math.min(p[0]*60+p[1]+d,23*60+55);et.value=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');}
+    // Start time only offers times a therapist is genuinely free (date + therapist
+    // + service duration). Reloads when any of those change.
+    async function loadTimes(){ if(!dateEl||!dateEl.value)return; var cur=st.value;
+      try{ var r=await fetch('/dashboard/avail-times?date='+encodeURIComponent(dateEl.value)+'&staff='+encodeURIComponent(staffEl?staffEl.value:'any')+'&service='+encodeURIComponent(svc.value));
+        var j=await r.json(); var times=j.times||[]; var inList=times.some(function(t){return t.hm===cur;});
+        var opts=times.map(function(t){return '<option value="'+t.hm+'">'+t.display+'</option>';}).join('');
+        if(EDITING&&cur&&!inList) opts='<option value="'+cur+'">'+cur+' (current)</option>'+opts;
+        if(!opts) opts='<option value="">No free times — try another day or therapist</option>';
+        st.innerHTML=opts;
+        st.value = inList ? cur : (EDITING&&cur ? cur : (times[0]?times[0].hm:''));
+        fillEnd();
+      }catch(e){}
+    }
     // Switching to a real service adopts ITS name, price and duration — clear any
     // stale custom label and set the price so edits update correctly (create+edit).
-    svc.addEventListener('change',()=>{fillEnd();const o=svc.selectedOptions[0];if(o&&o.value){if(o.dataset.price)pr.value=(+o.dataset.price/100).toFixed(0);if(clbl)clbl.value='';}});
+    svc.addEventListener('change',()=>{const o=svc.selectedOptions[0];if(o&&o.value){if(o.dataset.price)pr.value=(+o.dataset.price/100).toFixed(0);if(clbl)clbl.value='';}loadTimes();});
+    if(dateEl)dateEl.addEventListener('change',loadTimes);
+    if(staffEl)staffEl.addEventListener('change',loadTimes);
     st.addEventListener('change',fillEnd);
+    loadTimes();
     // Searchable client picker — filter saved clients by name / phone / email.
     var CLIENTS=${JSON.stringify(clients.map(cl => ({ id: cl.id, name: cl.name, email: cl.email || '', phone: cl.phone || '', notes: cl.notes || '', rewards: cl.rewards || [] })))};
     var cs=document.getElementById('clientsearch'),cid=document.getElementById('client_id'),cres=document.getElementById('clientresults'),cnb=document.getElementById('clientnotes'),cn=document.getElementById('cn'),ce=document.getElementById('ce'),cp=document.getElementById('cp');
@@ -659,7 +677,7 @@ app.get('/bookings/new', async (c) => {
   return shell(c, 'bookings', 'Add booking', `
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Add a booking</h2>
-    <p class="muted" style="margin-top:-6px">Manually schedule an appointment at any time — pick a start and end, e.g. <strong>9:10 am</strong> to <strong>10:25 am</strong>.</p>
+    <p class="muted" style="margin-top:-6px">Schedule an appointment — the start time only lists times the therapist is free. Adjust the end time for a longer or shorter session.</p>
     ${c.req.query('err') === 'busy' ? '<div class="notice err" style="max-width:580px">⚠️ That therapist is already booked over that time — pick another time or therapist (or use “Any available”).</div>' : ''}
     ${bookingForm(shop, staff, services, clients, '/dashboard/bookings/new', 'Add booking', v, loyOn)}
   `)
@@ -723,7 +741,7 @@ app.get('/bookings/:id/edit', async (c) => {
     // Blank when it just matches the service price → a blank field means "use the
     // selected service's price", so switching services updates price server-side too.
     price: (svcRow && b.price_cents === svcRow.price_cents) ? '' : (b.price_cents ? b.price_cents / 100 : ''),
-    client_id: b.client_id || '', requested_staff: b.requested_staff,
+    client_id: b.client_id || '', requested_staff: b.requested_staff, editing: true,
     customer_name: b.customer_name, customer_email: b.customer_email, customer_phone: b.customer_phone, notes: b.notes,
   }
 
@@ -954,6 +972,18 @@ app.get('/group-slots', async (c) => {
     if (free >= 1) slots.push({ hm: hm(m), display: disp(m), free })
   }
   return c.json({ slots })
+})
+
+// Available start times for the "Add booking" form (specific therapist or any).
+app.get('/avail-times', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const date = (c.req.query('date') || '').toString()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ times: [] })
+  const staff = (c.req.query('staff') || 'any').toString()
+  const serviceId = (c.req.query('service') || '').toString()
+  let dur = 60
+  if (serviceId) { const sv = await db.prepare('SELECT duration_minutes FROM services WHERE id=? AND shop_id=?').bind(serviceId, shop.id).first(); if (sv) dur = sv.duration_minutes }
+  return c.json({ times: await availStartTimes(db, shop, date, staff, dur, serviceId) })
 })
 
 // ─── Day reconciliation sheet (printable) ────────────────────────────────────
@@ -1481,7 +1511,9 @@ app.post('/settings', async (c) => {
     const from = (f[`hours_from_${d}`] || '').toString(), to = (f[`hours_to_${d}`] || '').toString()
     if (HHMM.test(from) && HHMM.test(to) && to > from) hours[d] = [from, to]
   }
-  const hoursJson = JSON.stringify(hours)
+  // Store NULL (no constraint) rather than "{}" when no day is open — an empty
+  // map must never silently close the whole shop.
+  const hoursJson = Object.keys(hours).length ? JSON.stringify(hours) : null
 
   await db.prepare(`UPDATE shops SET name=?, emoji=?, tagline=?, about=?, slug=?, accent=?, phone=?, email=?,
     address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, hours_json=?, google_review_url=?, loyalty_enabled=? WHERE id=?`)
