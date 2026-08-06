@@ -428,7 +428,11 @@ app.post('/:slug/book', async (c) => {
   // Deposit is charged ONCE for the whole booking/group (sum of each person's).
   const dep = (svc) => Math.round(svc.price_cents * shop.deposit_pct / 100)
   const totalDeposit = items.reduce((s, it) => s + dep(it.service), 0)
-  const useStripe = shop.deposit_pct > 0 && !!c.env.STRIPE_SECRET_KEY && totalDeposit > 0
+  // Deposits require the shop to have connected Stripe (Connect) with charges
+  // enabled. Shops that haven't connected simply take bookings with no deposit —
+  // that's the demo/test path.
+  const useStripe = shop.deposit_pct > 0 && totalDeposit > 0 && !!c.env.STRIPE_SECRET_KEY
+    && !!shop.stripe_account_id && !!shop.stripe_charges_enabled
   const status = useStripe ? 'pending_payment' : 'confirmed'
 
   // Insert every booking (own price + own deposit share + shared group_id).
@@ -448,6 +452,9 @@ app.post('/:slug/book', async (c) => {
   if (status === 'pending_payment') {
     const base = c.env.BASE_URL || 'https://alisa.bored.investments'
     const label = items.length > 1 ? `Deposit — ${items.length} appointments at ${shop.name}` : `Deposit — ${service.name} at ${shop.name}`
+    // Platform fee: 1% of the deposit, collected to Alisa; the rest settles to
+    // the shop's connected account (Connect direct charge).
+    const feeAmount = Math.max(0, Math.round(totalDeposit * 0.01))
     try {
       const session = await stripeClient(c.env.STRIPE_SECRET_KEY).createCheckoutSession({
         mode: 'payment',
@@ -462,9 +469,10 @@ app.post('/:slug/book', async (c) => {
             product_data: { name: label, description: `${formatBookingTime(startUnix, shop.timezone)}${items.length > 1 ? ` · ${items.length} people` : ` with ${primaryStaffName || 'our team'}`}` }
           }
         }],
+        payment_intent_data: feeAmount > 0 ? { application_fee_amount: feeAmount } : undefined,
         metadata: { booking_id: bookingId, group_id: groupId || '' },
         expires_at: Math.floor(Date.now() / 1000) + 1800
-      })
+      }, { account: shop.stripe_account_id })
       await db.prepare('UPDATE bookings SET stripe_session_id = ? WHERE id = ?').bind(session.id, bookingId).run()
       return c.redirect(session.url)
     } catch (err) {

@@ -1,11 +1,15 @@
 export function stripeClient(secretKey) {
   const baseHeaders = { 'Authorization': `Bearer ${secretKey}`, 'Content-Type': 'application/x-www-form-urlencoded' }
 
-  async function req(method, path, data) {
+  // opts.account → act on a connected account (Stripe-Account header, direct charges).
+  async function req(method, path, data, opts = {}) {
     const url = `https://api.stripe.com/v1${path}`
-    const opts = { method, headers: baseHeaders }
-    if (data) opts.body = new URLSearchParams(flattenParams(data)).toString()
-    const res = await fetch(url, opts)
+    const headers = { ...baseHeaders }
+    if (opts.account) headers['Stripe-Account'] = opts.account
+    if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey
+    const fetchOpts = { method, headers }
+    if (data) fetchOpts.body = new URLSearchParams(flattenParams(data)).toString()
+    const res = await fetch(url, fetchOpts)
     const json = await res.json()
     if (!res.ok) throw new Error(json.error?.message || `Stripe error ${res.status}`)
     return json
@@ -31,10 +35,15 @@ export function stripeClient(secretKey) {
   }
 
   return {
-    createCheckoutSession: (data) => req('POST', '/checkout/sessions', data),
-    retrieveCheckoutSession: (id) => req('GET', `/checkout/sessions/${id}`),
-    createRefund: (data) => req('POST', '/refunds', data),
-    retrievePaymentIntent: (id) => req('GET', `/payment_intents/${id}`),
+    createCheckoutSession: (data, opts) => req('POST', '/checkout/sessions', data, opts),
+    retrieveCheckoutSession: (id, opts) => req('GET', `/checkout/sessions/${id}`, null, opts),
+    createRefund: (data, opts) => req('POST', '/refunds', data, opts),
+    retrievePaymentIntent: (id, opts) => req('GET', `/payment_intents/${id}`, null, opts),
+    // ── Connect (Express) ──
+    createAccount: (data) => req('POST', '/accounts', data),
+    retrieveAccount: (id) => req('GET', `/accounts/${id}`),
+    createAccountLink: (data) => req('POST', '/account_links', data),
+    createLoginLink: (id) => req('POST', `/accounts/${id}/login_links`),
     async verifyWebhook(payload, sigHeader, secret) {
       const enc = new TextEncoder()
       const parts = sigHeader.split(',')

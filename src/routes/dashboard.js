@@ -466,9 +466,12 @@ async function bookingAction(c, action) {
       : [b]
     if (!targets.length) targets = [b]
     const charged = targets.find(x => x.stripe_charge_id && !x.refunded_at)
-    if (charged && c.env.STRIPE_SECRET_KEY) {
+    if (charged && c.env.STRIPE_SECRET_KEY && shop.stripe_account_id) {
       try {
-        await stripeClient(c.env.STRIPE_SECRET_KEY).createRefund({ charge: charged.stripe_charge_id, reason: 'requested_by_customer' })
+        // Refund on the shop's connected account and hand back the 1% platform fee too.
+        await stripeClient(c.env.STRIPE_SECRET_KEY).createRefund(
+          { charge: charged.stripe_charge_id, reason: 'requested_by_customer', refund_application_fee: true },
+          { account: shop.stripe_account_id })
         await db.prepare("UPDATE bookings SET refunded_at = unixepoch() WHERE id=?").bind(charged.id).run()
       } catch (e) { console.error('refund failed:', e.message) }
     }
@@ -1294,6 +1297,23 @@ app.get('/settings', async (c) => {
             .map(tz => `<option ${shop.timezone === tz ? 'selected' : ''}>${tz}</option>`).join('')}</select></div>
       </div>
       <div class="card" style="padding:22px;margin-bottom:18px">
+        <h3 style="margin-top:0">💳 Payments</h3>
+        ${c.req.query('psaved') ? '<div class="notice ok" style="margin-bottom:10px">Stripe status updated.</div>' : ''}
+        ${c.req.query('perr') ? '<div class="notice err" style="margin-bottom:10px">Couldn’t reach Stripe just then — please try again.</div>' : ''}
+        ${(() => {
+          const platform = !!c.env.STRIPE_SECRET_KEY
+          const acct = shop.stripe_account_id, active = acct && shop.stripe_charges_enabled, started = acct && !shop.stripe_charges_enabled
+          if (!platform) return `<p class="muted" style="margin:0">Online card deposits aren’t switched on for this platform yet, so bookings are taken <strong>without a deposit</strong> — perfect for testing. When Stripe is enabled you’ll be able to connect your account here.</p>`
+          if (active) return `<p style="margin:.2em 0"><span class="tag completed">✓ Connected</span> Deposits are on. Alisa keeps a <strong>1% platform fee</strong> on each deposit; the rest is paid straight into your own Stripe account.</p>
+            <div class="inline"><a class="btn ghost sm" href="/dashboard/payments/dashboard" target="_blank">Open Stripe dashboard →</a></div>`
+          if (started) return `<p style="margin:.2em 0"><span class="tag pending_payment">Setup incomplete</span> You started connecting Stripe but haven’t finished — deposits stay off until it’s done.</p>
+            <form method="post" action="/dashboard/payments/connect"><button class="btn sm">Finish Stripe setup →</button></form>`
+          return `<p style="margin:.2em 0">Connect your Stripe account to collect booking deposits. Alisa keeps a <strong>1% platform fee</strong> per deposit; everything else goes straight to you. Until you connect, bookings are taken <strong>without a deposit</strong> (handy for testing).</p>
+            <form method="post" action="/dashboard/payments/connect"><button class="btn sm">Connect Stripe →</button></form>`
+        })()}
+        <p class="muted" style="font-size:.82rem;margin:12px 0 0">The deposit <em>amount</em> is set by <strong>Deposit (% of price)</strong> below — set it to 0% to skip deposits even when connected.</p>
+      </div>
+      <div class="card" style="padding:22px;margin-bottom:18px">
         <h3 style="margin-top:0">Deposits &amp; cancellation</h3>
         <div class="row">
           <div class="field"><label>Deposit (% of price)</label><input type="number" name="deposit_pct" value="${f('deposit_pct', 20)}" min="0" max="100"></div>
@@ -1397,6 +1417,65 @@ app.post('/settings', async (c) => {
     await db.prepare('INSERT INTO loyalty_tiers (id, shop_id, visits, type, value) VALUES (?, ?, ?, ?, ?)').bind(genId(), shop.id, visits, type, value).run()
   }
   return c.redirect('/dashboard/settings')
+})
+
+// ─── Stripe Connect (Express) onboarding ─────────────────────────────────────
+const ONBOARD_LINK = (base) => ({ refresh_url: `${base}/dashboard/payments/refresh`, return_url: `${base}/dashboard/payments/return`, type: 'account_onboarding' })
+
+app.post('/payments/connect', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  if (!c.env.STRIPE_SECRET_KEY) return c.redirect('/dashboard/settings?perr=1')
+  const sc = stripeClient(c.env.STRIPE_SECRET_KEY)
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
+  try {
+    let acct = shop.stripe_account_id
+    if (!acct) {
+      const created = await sc.createAccount({
+        type: 'express',
+        email: shop.email || undefined,
+        capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
+        business_profile: { name: shop.name, url: `${base}/${shop.slug}`, mcc: '7298' },
+        metadata: { shop_id: shop.id }
+      })
+      acct = created.id
+      await db.prepare('UPDATE shops SET stripe_account_id=? WHERE id=?').bind(acct, shop.id).run()
+    }
+    const link = await sc.createAccountLink({ account: acct, ...ONBOARD_LINK(base) })
+    return c.redirect(link.url)
+  } catch (e) { console.error('connect failed:', e.message); return c.redirect('/dashboard/settings?perr=1') }
+})
+
+// Stripe bounces the owner back here after onboarding — refresh cached status.
+app.get('/payments/return', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  if (c.env.STRIPE_SECRET_KEY && shop.stripe_account_id) {
+    try {
+      const acct = await stripeClient(c.env.STRIPE_SECRET_KEY).retrieveAccount(shop.stripe_account_id)
+      await db.prepare('UPDATE shops SET stripe_charges_enabled=?, stripe_details_submitted=? WHERE id=?')
+        .bind(acct.charges_enabled ? 1 : 0, acct.details_submitted ? 1 : 0, shop.id).run()
+    } catch (e) { console.error('return refresh failed:', e.message) }
+  }
+  return c.redirect('/dashboard/settings?psaved=1')
+})
+
+// Onboarding link expired mid-flow — mint a fresh one.
+app.get('/payments/refresh', async (c) => {
+  const shop = c.get('shop'), base = c.env.BASE_URL || 'https://alisa.bored.investments'
+  if (!c.env.STRIPE_SECRET_KEY || !shop.stripe_account_id) return c.redirect('/dashboard/settings')
+  try {
+    const link = await stripeClient(c.env.STRIPE_SECRET_KEY).createAccountLink({ account: shop.stripe_account_id, ...ONBOARD_LINK(base) })
+    return c.redirect(link.url)
+  } catch (e) { return c.redirect('/dashboard/settings?perr=1') }
+})
+
+// Express dashboard (payouts, etc.) via a single-use login link.
+app.get('/payments/dashboard', async (c) => {
+  const shop = c.get('shop')
+  if (!c.env.STRIPE_SECRET_KEY || !shop.stripe_account_id) return c.redirect('/dashboard/settings')
+  try {
+    const link = await stripeClient(c.env.STRIPE_SECRET_KEY).createLoginLink(shop.stripe_account_id)
+    return c.redirect(link.url)
+  } catch (e) { return c.redirect('/dashboard/settings?perr=1') }
 })
 
 // ─── Reviews ─────────────────────────────────────────────────────────────────

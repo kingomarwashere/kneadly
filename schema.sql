@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS shops (
   cancellation_hours INTEGER NOT NULL DEFAULT 24,
   slot_interval_minutes INTEGER NOT NULL DEFAULT 15,  -- spacing between bookable start times
   hours_json TEXT,               -- opening hours: {"0":["09:00","18:00"],...} keyed by weekday (0=Sun); null/missing day = closed
+  stripe_account_id TEXT,        -- Stripe Connect (Express) account id — deposits are charged here; null = no online payments (demo/test mode)
+  stripe_charges_enabled INTEGER NOT NULL DEFAULT 0,   -- account can accept charges (from account.updated / retrieve)
+  stripe_details_submitted INTEGER NOT NULL DEFAULT 0, -- finished Stripe onboarding
   google_review_url TEXT,        -- shop's Google review link (for the review handoff)
   loyalty_enabled INTEGER NOT NULL DEFAULT 0,
   loyalty_threshold INTEGER NOT NULL DEFAULT 5,   -- completed visits per reward

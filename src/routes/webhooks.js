@@ -18,6 +18,16 @@ app.post('/stripe', async (c) => {
   }
 
   const db = c.env.DB
+  // Connect direct charges arrive as events FROM the connected account.
+  const account = event.account || null
+
+  // Keep the shop's connected-account status fresh (charges/onboarding state).
+  if (event.type === 'account.updated') {
+    const acct = event.data.object
+    await db.prepare('UPDATE shops SET stripe_charges_enabled=?, stripe_details_submitted=? WHERE stripe_account_id=?')
+      .bind(acct.charges_enabled ? 1 : 0, acct.details_submitted ? 1 : 0, acct.id).run()
+    return c.json({ ok: true })
+  }
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object
@@ -28,7 +38,7 @@ app.post('/stripe', async (c) => {
 
     let chargeId = null
     try {
-      const pi = await stripeClient(c.env.STRIPE_SECRET_KEY).retrievePaymentIntent(session.payment_intent)
+      const pi = await stripeClient(c.env.STRIPE_SECRET_KEY).retrievePaymentIntent(session.payment_intent, { account })
       chargeId = pi.latest_charge
     } catch (err) { console.error('charge lookup failed:', err.message) }
 
