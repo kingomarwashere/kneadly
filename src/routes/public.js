@@ -246,6 +246,8 @@ app.get('/:slug/book', async (c) => {
           .seg small{display:block;font-weight:400;font-size:.76rem;color:var(--muted);margin-top:2px}
           .seg.on{border-color:var(--accent);background:#eef4f3;color:var(--accent-ink);box-shadow:0 0 0 3px rgba(15,118,110,.10)}
           .seg.on small{color:var(--accent-ink)}
+          .pcard{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0}
+          .pcard .field:last-child{margin-bottom:0}
         </style>
         <h3 style="margin:1.2em 0 .4em;font-size:1.05rem">${t(lang, 'bk_type')}</h3>
         <div class="segwrap">
@@ -253,17 +255,23 @@ app.get('/:slug/book', async (c) => {
           <button type="button" class="seg" id="segGroup" data-type="group">👥 ${t(lang, 'group_couple')}</button>
         </div>
 
-        <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">${t(lang, 'step1')}</h3>
-        <select name="staff" id="staff">
-          <option value="any">${t(lang, 'anyone')}</option>
-          ${staff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}
-        </select>
+        <h3 id="peopleHead" style="margin:1.4em 0 .4em;font-size:1.05rem">${t(lang, 'step1')}</h3>
+        <p id="grpnote" class="muted" style="display:none;font-size:.83rem;margin:-.15em 0 .7em">${t(lang, 'same_time_note')}</p>
+
+        <div id="p1card">
+          <div id="p1head" style="display:none;margin-bottom:8px"><strong>👤 ${t(lang, 'you')}</strong></div>
+          <div id="p1svc" class="muted" style="display:none;font-size:.85rem;margin-bottom:10px">${esc(service.name)} · ${service.duration_minutes} ${t(lang, 'min')} · ${money(service.price_cents, shop.currency)}</div>
+          <label id="p1lbl" style="display:none">${t(lang, 'c_therapist')}</label>
+          <select name="staff" id="staff">
+            <option value="any">${t(lang, 'anyone')}</option>
+            ${staff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}
+          </select>
+        </div>
 
         <div id="groupwrap" style="display:none">
-          <p class="muted" style="font-size:.83rem;margin:1.1em 0 .2em">${t(lang, 'same_time_note')}</p>
-          ${[2, 3, 4].map(n => `<div class="guestx" data-n="${n}" style="display:none;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0">
-            <div class="inline" style="justify-content:space-between;align-items:center;margin-bottom:8px"><strong>${t(lang, 'guest')} ${n}</strong><button type="button" class="btn ghost sm rmperson">${t(lang, 'remove_word')}</button></div>
-            <div class="field"><label>${t(lang, 'full_name')}</label><input name="guest_name_${n}"></div>
+          ${[2, 3, 4].map(n => `<div class="guestx pcard" data-n="${n}" style="display:none">
+            <div class="inline" style="justify-content:space-between;align-items:center;margin-bottom:8px"><strong>👤 ${t(lang, 'guest')} ${n - 1}</strong><button type="button" class="btn ghost sm rmperson">${t(lang, 'remove_word')}</button></div>
+            <div class="field"><label>${t(lang, 'full_name')} <span class="muted">(${t(lang, 'optional')})</span></label><input name="guest_name_${n}"></div>
             <div class="field"><label>${t(lang, 'services')}</label><select name="guest_service_${n}" class="gsvc"><option value="">—</option>${allServices.map(s => `<option value="${s.id}">${esc(s.name)} · ${s.duration_minutes} ${t(lang, 'min')}</option>`).join('')}</select></div>
             <div class="field" style="margin-bottom:0"><label>${t(lang, 'c_therapist')}</label><select name="guest_staff_${n}" class="gstf"><option value="any">✨ ${t(lang, 'anyone')}</option>${groupStaff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
           </div>`).join('')}
@@ -347,9 +355,16 @@ app.get('/:slug/book', async (c) => {
   // Single vs Group — the first choice. Group reveals the guest section; single
   // hides & clears it so solo bookings stay short (therapist → date → time → you).
   var groupWrap=document.getElementById('groupwrap'),segSingle=document.getElementById('segSingle'),segGroup=document.getElementById('segGroup');
+  var peopleHead=document.getElementById('peopleHead'),grpnote=document.getElementById('grpnote'),p1card=document.getElementById('p1card'),p1head=document.getElementById('p1head'),p1svc=document.getElementById('p1svc'),p1lbl=document.getElementById('p1lbl');
+  var GRP_HEAD=${JSON.stringify(t(lang, 'grp_head'))}, SINGLE_HEAD=${JSON.stringify(t(lang, 'step1'))};
   function setType(type){var group=type==='group';
     segGroup.classList.toggle('on',group);segSingle.classList.toggle('on',!group);
     groupWrap.style.display=group?'':'none';
+    // In group mode, present person 1 as a "You" card so the group reads You → Guest 1 → …
+    peopleHead.textContent=group?GRP_HEAD:SINGLE_HEAD;
+    grpnote.style.display=group?'':'none';
+    p1card.classList.toggle('pcard',group);
+    p1head.style.display=group?'':'none';p1svc.style.display=group?'':'none';p1lbl.style.display=group?'':'none';
     if(group){if(!shownGuests().length){var h=guestBlocks.filter(function(g){return g.style.display==='none';});if(h.length)h[0].style.display='';}}
     else{guestBlocks.forEach(function(g){g.style.display='none';g.querySelectorAll('input').forEach(function(i){i.value='';});g.querySelectorAll('select').forEach(function(s){s.selectedIndex=0;});});}
     syncGuests();reloadTimes();}
