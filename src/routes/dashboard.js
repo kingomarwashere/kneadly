@@ -329,7 +329,7 @@ async function renderDayRoster(c) {
     ${ROSTER_CSS}
     <div class="inline" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <div class="inline" style="gap:12px"><h2 style="margin:0">Roster</h2>${vtoggle('day', date, monOf(date))}</div>
-      <div class="inline" style="gap:8px;flex-wrap:wrap"><a class="btn sm" href="/dashboard/bookings/new?date=${date}">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new?date=${date}">👥 Group</a>${nav}</div>
+      <div class="inline" style="gap:8px;flex-wrap:wrap"><a class="btn sm" href="/dashboard/bookings/new?date=${date}">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new?date=${date}">👥 Group</a><a class="btn ghost sm" href="/dashboard/day-sheet?date=${date}" target="_blank">🧾 Day sheet</a>${nav}</div>
     </div>
     <div class="inline" style="gap:8px;align-items:center;margin:10px 0 0"><span class="muted" style="font-size:.85rem">📅 Jump to</span><input type="date" value="${date}" onchange="if(this.value)location.href='/dashboard/roster?view=day&date='+this.value" aria-label="Jump to date" style="padding:7px 10px;border:1px solid var(--line);border-radius:9px;font:inherit;max-width:180px"></div>
     <div class="muted" style="margin:6px 0 12px">${heading}${date === today ? ' · today' : ''} · ${bookings.length} booking${bookings.length === 1 ? '' : 's'} · <span style="font-size:.9em">drag a booking to reschedule · click a slot to add</span></div>
@@ -942,6 +942,131 @@ app.get('/group-slots', async (c) => {
     if (free >= 1) slots.push({ hm: hm(m), display: disp(m), free })
   }
   return c.json({ slots })
+})
+
+// ─── Day reconciliation sheet (printable) ────────────────────────────────────
+// A printable end-of-day cash-up sheet in the style of a paper massage-shop
+// ledger: one row per booking (time · service · price), a column per therapist,
+// and the cash/credit/staff totals to reconcile the till by hand.
+app.get('/day-sheet', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), tz = shop.timezone
+  const today = dateTzString(new Date(), tz)
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query('date') || '') ? c.req.query('date') : today
+
+  const staff = (await db.prepare('SELECT id,name FROM staff WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  const dayStartU = Math.floor(localToUtcMs(date, '00:00', tz) / 1000)
+  const bookings = (await db.prepare("SELECT * FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? AND status!='cancelled' ORDER BY start_time")
+    .bind(shop.id, dayStartU, dayStartU + 86400).all()).results || []
+
+  // Therapist columns (pad to at least 4 blanks; cap at 6 to fit the page).
+  let cols = staff.slice(0, 6).map(s => ({ id: s.id, name: s.name }))
+  while (cols.length < 4) cols.push({ id: null, name: '' })
+  const nStaff = cols.length
+
+  const amt = cents => { const v = (cents || 0) / 100; return v ? v.toFixed(2).replace(/\.00$/, '') : '' }
+  const clk = u => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(u * 1000))
+  const durLabel = (s, e) => { const m = Math.round((e - s) / 60); return m % 60 === 0 ? `${m / 60} hr` : `${m} mins` }
+  const fullTotal = bookings.reduce((s, b) => s + (b.price_cents || 0), 0)
+
+  const heading = new Date(date + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'long' })
+  const dispDate = new Date(date + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'numeric', year: '2-digit' })
+  const ROWS = Math.max(30, bookings.length)
+
+  // Column widths (%). Fixed cols + evenly split staff cols.
+  const fixed = { job: 4, time: 12, svc: 19, full: 8, cs: 6, cr: 7, tf: 6, rem: 10 }
+  const staffW = Math.max(4, Math.round((100 - Object.values(fixed).reduce((a, b) => a + b, 0)) / nStaff))
+
+  const headCells =
+    `<th style="width:${fixed.job}%">JOB</th><th style="width:${fixed.time}%">TIME</th><th style="width:${fixed.svc}%">SERVICE</th>` +
+    `<th style="width:${fixed.full}%">FULL<br>PRICE</th><th style="width:${fixed.cs}%">CS</th><th style="width:${fixed.cr}%">CR</th><th style="width:${fixed.tf}%">TF</th>` +
+    cols.map((cc, i) => `<th style="width:${staffW}%">${esc((cc.name || '').split(' ')[0].toUpperCase())}${cc.name ? `<sup>${i + 1}</sup>` : ''}</th>`).join('') +
+    `<th style="width:${fixed.rem}%">REMARK</th>`
+
+  const rowsHtml = Array.from({ length: ROWS }, (_, i) => {
+    const b = bookings[i]
+    const ci = b ? cols.findIndex(cc => cc.id === b.staff_id) : -1
+    const staffCells = cols.map((cc, j) => `<td class="num">${b && j === ci ? '•' : ''}</td>`).join('')
+    const inCols = b && ci >= 0
+    const remark = b && !inCols ? esc((b.staff_name || '').split(' ')[0]) : ''
+    return `<tr>
+      <td class="job">${i + 1}</td>
+      <td>${b ? `${clk(b.start_time)}–${clk(b.end_time)}` : ''}</td>
+      <td class="svc">${b ? `${esc(b.service_name || '')} <span class="dur">${durLabel(b.start_time, b.end_time)}</span>` : ''}</td>
+      <td class="num">${b ? amt(b.price_cents) : ''}</td>
+      <td class="num"></td><td class="num"></td><td class="num"></td>
+      ${staffCells}
+      <td>${remark}</td>
+    </tr>`
+  }).join('')
+
+  const totalRow = `<tr class="tot">
+    <td></td><td></td><td class="rt">TOTAL</td>
+    <td class="num b">${amt(fullTotal)}</td><td class="num"></td><td class="num"></td><td class="num"></td>
+    ${cols.map(() => '<td></td>').join('')}<td></td></tr>`
+  const staffTotRow = (label) => `<tr class="tot">
+    <td colspan="7" class="rt">${label}</td>
+    ${cols.map(() => '<td></td>').join('')}<td></td></tr>`
+
+  const line = (n = 8) => `<span class="fill" style="min-width:${n}ch"></span>`
+  const css = `
+    :root{--accent:${shop.accent}}
+    body{background:#f4f2ee}
+    .bar{max-width:900px;margin:14px auto 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:0 12px}
+    .bar input[type=date]{padding:8px 10px;border:1px solid #ccc;border-radius:8px;font:inherit;max-width:180px}
+    .sheet{max-width:900px;margin:12px auto 40px;background:#fff;color:#000;padding:14px 16px;box-shadow:0 1px 6px rgba(0,0,0,.12)}
+    .shead{display:flex;align-items:stretch;border:1.5px solid #000;border-bottom:none}
+    .shead .nm{background:#111;color:#fff;font-weight:700;letter-spacing:.03em;padding:7px 10px;font-size:12px;display:flex;align-items:center;white-space:nowrap}
+    .shead .day{flex:1;text-align:center;font-weight:700;font-size:15px;display:flex;align-items:center;justify-content:center;border-left:1.5px solid #000}
+    .shead .meta{padding:6px 10px;font-size:11px;border-left:1.5px solid #000;display:flex;align-items:center;gap:10px;white-space:nowrap}
+    table.rs{border-collapse:collapse;width:100%;table-layout:fixed}
+    table.rs th,table.rs td{border:1px solid #000;padding:1px 3px;font-size:9.5px;line-height:1.25;height:17px;overflow:hidden;text-align:center;vertical-align:middle}
+    table.rs th{background:#eee;font-size:8.5px;font-weight:700}
+    table.rs td.job{font-size:8px;color:#333}
+    table.rs td.svc{text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    table.rs td.svc .dur{color:#555;font-size:8.5px}
+    table.rs td.num{text-align:right}
+    table.rs td.rt,table.rs td[colspan]{text-align:right;font-weight:700;font-size:8.5px}
+    table.rs tr.tot td{height:19px;background:#f6f6f6}
+    table.rs .b{font-weight:700}
+    sup{font-size:7px}
+    .recon{border:1.5px solid #000;border-top:none;padding:8px 8px 10px;font-size:11px;line-height:2.1}
+    .fill{display:inline-block;border-bottom:1px solid #000;min-width:8ch;margin:0 4px}
+    .noprint{}
+    @media print{ .noprint,footer{display:none!important} body{background:#fff} .sheet{box-shadow:none;margin:0;max-width:none;padding:0} table.rs th,table.rs tr.tot td{-webkit-print-color-adjust:exact;print-color-adjust:exact} @page{size:A4 portrait;margin:8mm} }
+  `
+
+  return c.html(layout(`Day sheet — ${dispDate}`, `
+    <div class="bar noprint">
+      <a class="btn ghost sm" href="/dashboard/roster?view=day&date=${date}">← Roster</a>
+      <form style="display:flex;gap:8px;align-items:center" onsubmit="return false">
+        <label style="font-weight:600;font-size:.9rem;margin:0">Day sheet</label>
+        <input type="date" value="${date}" onchange="if(this.value)location.href='/dashboard/day-sheet?date='+this.value">
+      </form>
+      <button class="btn sm" onclick="window.print()">🖨️ Print / Save PDF</button>
+      <span class="muted" style="font-size:.82rem">${bookings.length} booking${bookings.length === 1 ? '' : 's'} · pre-filled from your calendar; fill the cash columns by hand.</span>
+    </div>
+    <div class="sheet">
+      <div class="shead">
+        <div class="nm">${esc(shop.emoji || '')} ${esc(shop.name.toUpperCase())}</div>
+        <div class="day">${heading}</div>
+        <div class="meta"><span>DATE ${dispDate}</span><span>CHANGE ____</span></div>
+      </div>
+      <table class="rs">
+        <thead><tr>${headCells}</tr></thead>
+        <tbody>
+          ${rowsHtml}
+          ${totalRow}
+          ${staffTotRow('STAFF TOTAL =')}
+          ${staffTotRow('STAFF CASH =')}
+          ${staffTotRow('STAFF BANK =')}
+        </tbody>
+      </table>
+      <div class="recon">
+        <div>CASH ${line()} + CREDIT ${line()} + TF ${line(5)} ( + FS ${line(4)} ) = SHOP TOTAL <strong>${amt(fullTotal) || line()}</strong> − STAFF TOTAL ${line()} = NET INCOME ${line()}</div>
+        <div>CASH ${line()} + CHANGE ${line()} − STAFF CASH ${line()} − MISC ${line(5)} = TOTAL ${line()} &nbsp; ( KEEP ${line()} / CHANGE ${line()} )</div>
+      </div>
+    </div>
+  `, { lang: c.get('lang'), css }))
 })
 
 // ─── Services ────────────────────────────────────────────────────────────────
