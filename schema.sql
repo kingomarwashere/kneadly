@@ -129,6 +129,17 @@ CREATE TABLE IF NOT EXISTS availability (
 );
 
 -- Loyalty reward tiers per shop (milestones, e.g. 5 visits = $20, 10 = $50).
+-- Saved end-of-day reconciliation sheets (editable cash-up). One per shop+date;
+-- data is a JSON map of cell key -> value.
+CREATE TABLE IF NOT EXISTS day_sheets (
+  shop_id TEXT NOT NULL,
+  date TEXT NOT NULL,
+  data TEXT NOT NULL,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (shop_id, date),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS loyalty_tiers (
   id TEXT PRIMARY KEY,
   shop_id TEXT NOT NULL,

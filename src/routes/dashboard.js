@@ -969,13 +969,20 @@ app.get('/day-sheet', async (c) => {
   const amt = cents => { const v = (cents || 0) / 100; return v ? v.toFixed(2).replace(/\.00$/, '') : '' }
   const clk = u => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(u * 1000))
   const durLabel = (s, e) => { const m = Math.round((e - s) / 60); return m % 60 === 0 ? `${m / 60} hr` : `${m} mins` }
-  const fullTotal = bookings.reduce((s, b) => s + (b.price_cents || 0), 0)
 
   const heading = new Date(date + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'long' })
   const dispDate = new Date(date + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'numeric', year: '2-digit' })
   const ROWS = Math.max(30, bookings.length)
 
-  // Column widths (%). Fixed cols + evenly split staff cols.
+  // Saved manual entries (cash, commissions, change…) keyed by cell.
+  const savedRow = await db.prepare('SELECT data FROM day_sheets WHERE shop_id=? AND date=?').bind(shop.id, date).first()
+  let saved = {}; if (savedRow) { try { saved = JSON.parse(savedRow.data) || {} } catch { saved = {} } }
+
+  // Editable cell. calc = auto-computed (read-only); everything else is typed.
+  const cell = (k, val = '', { calc = false, num = true, ph = '' } = {}) =>
+    `<input data-k="${k}" value="${esc(val)}"${calc ? ' readonly tabindex="-1"' : ''} class="c${num ? ' num' : ' tl'}${calc ? ' calc' : ''}"${ph ? ` placeholder="${esc(ph)}"` : ''}${calc ? '' : ' inputmode="' + (num ? 'decimal' : 'text') + '"'}>`
+  const fillin = (k, calc = false, strong = false) => `<input data-k="${k}"${calc ? ' readonly tabindex="-1"' : ''} class="fillin${calc ? ' calc' : ''}${strong ? ' b' : ''}" inputmode="decimal">`
+
   const fixed = { job: 4, time: 12, svc: 19, full: 8, cs: 6, cr: 7, tf: 6, rem: 10 }
   const staffW = Math.max(4, Math.round((100 - Object.values(fixed).reduce((a, b) => a + b, 0)) / nStaff))
 
@@ -988,88 +995,152 @@ app.get('/day-sheet', async (c) => {
   const rowsHtml = Array.from({ length: ROWS }, (_, i) => {
     const b = bookings[i]
     const ci = b ? cols.findIndex(cc => cc.id === b.staff_id) : -1
-    const staffCells = cols.map((cc, j) => `<td class="num">${b && j === ci ? '•' : ''}</td>`).join('')
-    const inCols = b && ci >= 0
-    const remark = b && !inCols ? esc((b.staff_name || '').split(' ')[0]) : ''
+    const staffCells = cols.map((cc, j) => `<td class="${b && j === ci ? 'assigned' : ''}">${cell(`r${i}_s${j}`, '', { ph: b && j === ci ? (cc.name || '').slice(0, 1).toUpperCase() : '' })}</td>`).join('')
     return `<tr>
       <td class="job">${i + 1}</td>
-      <td>${b ? `${clk(b.start_time)}–${clk(b.end_time)}` : ''}</td>
-      <td class="svc">${b ? `${esc(b.service_name || '')} <span class="dur">${durLabel(b.start_time, b.end_time)}</span>` : ''}</td>
-      <td class="num">${b ? amt(b.price_cents) : ''}</td>
-      <td class="num"></td><td class="num"></td><td class="num"></td>
+      <td>${cell(`r${i}_time`, b ? `${clk(b.start_time)}–${clk(b.end_time)}` : '', { num: false })}</td>
+      <td>${cell(`r${i}_svc`, b ? `${b.service_name || ''} · ${durLabel(b.start_time, b.end_time)}` : '', { num: false })}</td>
+      <td>${cell(`r${i}_full`, b ? amt(b.price_cents) : '')}</td>
+      <td>${cell(`r${i}_cs`)}</td><td>${cell(`r${i}_cr`)}</td><td>${cell(`r${i}_tf`)}</td>
       ${staffCells}
-      <td>${remark}</td>
+      <td>${cell(`r${i}_rem`, '', { num: false })}</td>
     </tr>`
   }).join('')
 
   const totalRow = `<tr class="tot">
     <td></td><td></td><td class="rt">TOTAL</td>
-    <td class="num b">${amt(fullTotal)}</td><td class="num"></td><td class="num"></td><td class="num"></td>
+    <td>${cell('tot_full', '', { calc: true })}</td><td>${cell('tot_cs', '', { calc: true })}</td><td>${cell('tot_cr', '', { calc: true })}</td><td>${cell('tot_tf', '', { calc: true })}</td>
     ${cols.map(() => '<td></td>').join('')}<td></td></tr>`
-  const staffTotRow = (label) => `<tr class="tot">
+  const staffRow = (label, prefix, calc) => `<tr class="tot">
     <td colspan="7" class="rt">${label}</td>
-    ${cols.map(() => '<td></td>').join('')}<td></td></tr>`
+    ${cols.map((_, j) => `<td>${cell(`${prefix}_${j}`, '', { calc })}</td>`).join('')}<td></td></tr>`
 
-  const line = (n = 8) => `<span class="fill" style="min-width:${n}ch"></span>`
   const css = `
     :root{--accent:${shop.accent}}
     body{background:#f4f2ee}
     .bar{max-width:900px;margin:14px auto 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:0 12px}
     .bar input[type=date]{padding:8px 10px;border:1px solid #ccc;border-radius:8px;font:inherit;max-width:180px}
+    #savestatus{font-size:.82rem;color:var(--muted)}
     .sheet{max-width:900px;margin:12px auto 40px;background:#fff;color:#000;padding:14px 16px;box-shadow:0 1px 6px rgba(0,0,0,.12)}
     .shead{display:flex;align-items:stretch;border:1.5px solid #000;border-bottom:none}
     .shead .nm{background:#111;color:#fff;font-weight:700;letter-spacing:.03em;padding:7px 10px;font-size:12px;display:flex;align-items:center;white-space:nowrap}
     .shead .day{flex:1;text-align:center;font-weight:700;font-size:15px;display:flex;align-items:center;justify-content:center;border-left:1.5px solid #000}
-    .shead .meta{padding:6px 10px;font-size:11px;border-left:1.5px solid #000;display:flex;align-items:center;gap:10px;white-space:nowrap}
+    .shead .meta{padding:6px 10px;font-size:11px;border-left:1.5px solid #000;display:flex;align-items:center;gap:8px;white-space:nowrap}
+    .shead .meta input{width:8ch;border:none;border-bottom:1px solid #000;font:inherit;font-size:11px;text-align:center;background:transparent}
     table.rs{border-collapse:collapse;width:100%;table-layout:fixed}
-    table.rs th,table.rs td{border:1px solid #000;padding:1px 3px;font-size:9.5px;line-height:1.25;height:17px;overflow:hidden;text-align:center;vertical-align:middle}
-    table.rs th{background:#eee;font-size:8.5px;font-weight:700}
+    table.rs th,table.rs td{border:1px solid #000;padding:0;font-size:9.5px;line-height:1.2;height:18px;overflow:hidden;text-align:center;vertical-align:middle}
+    table.rs th{background:#eee;font-size:8.5px;font-weight:700;padding:1px 2px}
     table.rs td.job{font-size:8px;color:#333}
-    table.rs td.svc{text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    table.rs td.svc .dur{color:#555;font-size:8.5px}
-    table.rs td.num{text-align:right}
-    table.rs td.rt,table.rs td[colspan]{text-align:right;font-weight:700;font-size:8.5px}
-    table.rs tr.tot td{height:19px;background:#f6f6f6}
-    table.rs .b{font-weight:700}
+    table.rs td.assigned{background:#eaf3f1}
+    table.rs td.rt,table.rs td[colspan]{text-align:right;font-weight:700;font-size:8.5px;padding:0 4px}
+    table.rs tr.tot td{height:20px;background:#f6f6f6}
+    input.c{width:100%;height:100%;border:none;border-radius:0;-webkit-appearance:none;appearance:none;background:transparent;font:inherit;font-size:9.5px;padding:0 3px;text-align:center;color:#000}
+    input.c.num{text-align:right}
+    input.c.tl{text-align:left}
+    input.c.calc{font-weight:700;background:#f0efe9}
+    input.c:focus{outline:2px solid var(--accent);outline-offset:-2px;background:#fffef8}
     sup{font-size:7px}
-    .recon{border:1.5px solid #000;border-top:none;padding:8px 8px 10px;font-size:11px;line-height:2.1}
-    .fill{display:inline-block;border-bottom:1px solid #000;min-width:8ch;margin:0 4px}
-    .noprint{}
-    @media print{ .noprint,footer{display:none!important} body{background:#fff} .sheet{box-shadow:none;margin:0;max-width:none;padding:0} table.rs th,table.rs tr.tot td{-webkit-print-color-adjust:exact;print-color-adjust:exact} @page{size:A4 portrait;margin:8mm} }
+    .recon{border:1.5px solid #000;border-top:none;padding:8px 8px 10px;font-size:11px;line-height:2.2}
+    .fillin{border:none;border-bottom:1px solid #000;border-radius:0;-webkit-appearance:none;appearance:none;width:8ch;font:inherit;font-size:11px;text-align:center;background:transparent;margin:0 3px;color:#000}
+    .fillin.b{font-weight:700}
+    .fillin.calc{background:#f0efe9}
+    .fillin:focus,.shead .meta input:focus{outline:none;background:#fffef8}
+    @media print{ .noprint,footer{display:none!important} body{background:#fff} .sheet{box-shadow:none;margin:0;max-width:none;padding:0}
+      input.c.calc,.fillin.calc,table.rs th,table.rs tr.tot td,table.rs td.assigned{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      input.c.calc,.fillin.calc{background:transparent!important} @page{size:A4 portrait;margin:8mm} }
   `
 
-  return c.html(layout(`Day sheet — ${dispDate}`, `
+  const bootstrap = `<script>
+    window.__DS={ date:${JSON.stringify(date)}, rows:${ROWS}, cols:${nStaff}, saved:${JSON.stringify(saved).replace(/</g, '\\u003c')} };
+  </script>`
+
+  return c.html(layout('Day sheet', `${bootstrap}
     <div class="bar noprint">
       <a class="btn ghost sm" href="/dashboard/roster?view=day&date=${date}">← Roster</a>
-      <form style="display:flex;gap:8px;align-items:center" onsubmit="return false">
-        <label style="font-weight:600;font-size:.9rem;margin:0">Day sheet</label>
-        <input type="date" value="${date}" onchange="if(this.value)location.href='/dashboard/day-sheet?date='+this.value">
-      </form>
-      <button class="btn sm" onclick="window.print()">🖨️ Print / Save PDF</button>
-      <span class="muted" style="font-size:.82rem">${bookings.length} booking${bookings.length === 1 ? '' : 's'} · pre-filled from your calendar; fill the cash columns by hand.</span>
+      <input type="date" value="${date}" onchange="if(this.value)location.href='/dashboard/day-sheet?date='+this.value" aria-label="Day sheet date">
+      <button class="btn sm" id="savebtn">💾 Save</button>
+      <button class="btn ghost sm" onclick="window.print()">🖨️ Print / PDF</button>
+      <span id="savestatus"></span>
+      <form method="post" action="/dashboard/day-sheet/reset" style="margin:0" onsubmit="return confirm('Clear your saved entries for this day and reload from the calendar?')"><input type="hidden" name="date" value="${date}"><button class="btn ghost sm" type="submit" style="color:var(--danger)">↻ Reset</button></form>
     </div>
+    <p class="bar noprint muted" style="margin-top:2px;font-size:.82rem;padding-top:0">Type in any cell — cash (CS), card (CR), transfers (TF), staff pay, change. Grey cells total automatically. Edits save as you type.</p>
     <div class="sheet">
       <div class="shead">
         <div class="nm">${esc(shop.emoji || '')} ${esc(shop.name.toUpperCase())}</div>
         <div class="day">${heading}</div>
-        <div class="meta"><span>DATE ${dispDate}</span><span>CHANGE ____</span></div>
+        <div class="meta"><span>DATE ${dispDate}</span><span>CHANGE ${fillin('hdr_change').replace('class="fillin"', 'class="fillin" style="width:7ch"')}</span></div>
       </div>
       <table class="rs">
         <thead><tr>${headCells}</tr></thead>
         <tbody>
           ${rowsHtml}
           ${totalRow}
-          ${staffTotRow('STAFF TOTAL =')}
-          ${staffTotRow('STAFF CASH =')}
-          ${staffTotRow('STAFF BANK =')}
+          ${staffRow('STAFF TOTAL =', 'st', true)}
+          ${staffRow('STAFF CASH =', 'sc', false)}
+          ${staffRow('STAFF BANK =', 'sb', false)}
         </tbody>
       </table>
       <div class="recon">
-        <div>CASH ${line()} + CREDIT ${line()} + TF ${line(5)} ( + FS ${line(4)} ) = SHOP TOTAL <strong>${amt(fullTotal) || line()}</strong> − STAFF TOTAL ${line()} = NET INCOME ${line()}</div>
-        <div>CASH ${line()} + CHANGE ${line()} − STAFF CASH ${line()} − MISC ${line(5)} = TOTAL ${line()} &nbsp; ( KEEP ${line()} / CHANGE ${line()} )</div>
+        <div>CASH ${fillin('b_cash', true)} + CREDIT ${fillin('b_credit', true)} + TF ${fillin('b_tf', true)} ( + FS ${fillin('b_fs')} ) = SHOP TOTAL ${fillin('b_shopTotal', true, true)} − STAFF TOTAL ${fillin('b_staffTotal', true)} = NET INCOME ${fillin('b_net', true, true)}</div>
+        <div>CASH ${fillin('b_cash2', true)} + CHANGE ${fillin('b_change2', true)} − STAFF CASH ${fillin('b_staffCash', true)} − MISC ${fillin('b_misc')} = TOTAL ${fillin('b_total', true, true)} &nbsp; ( KEEP ${fillin('b_keep')} / CHANGE ${fillin('b_change3')} )</div>
       </div>
     </div>
+    <script>
+    (function(){
+      var D=window.__DS, ROWS=D.rows, COLS=D.cols;
+      var inputs=[].slice.call(document.querySelectorAll('[data-k]'));
+      var byK={}; inputs.forEach(function(el){byK[el.dataset.k]=el;});
+      function num(k){var el=byK[k];return el?(parseFloat(el.value)||0):0;}
+      function fmt(v){ if(!v) return ''; return String(Math.round(v*100)/100); }
+      function setC(k,v){ if(byK[k]) byK[k].value=fmt(v); }
+      // Apply saved manual entries.
+      Object.keys(D.saved||{}).forEach(function(k){ if(byK[k]&&!byK[k].classList.contains('calc')) byK[k].value=D.saved[k]; });
+      function calc(){
+        var tf=0,tcs=0,tcr=0,ttf=0;
+        for(var i=0;i<ROWS;i++){ tf+=num('r'+i+'_full'); tcs+=num('r'+i+'_cs'); tcr+=num('r'+i+'_cr'); ttf+=num('r'+i+'_tf'); }
+        setC('tot_full',tf);setC('tot_cs',tcs);setC('tot_cr',tcr);setC('tot_tf',ttf);
+        var stTotal=0, scTotal=0;
+        for(var j=0;j<COLS;j++){ var s=0; for(var r=0;r<ROWS;r++) s+=num('r'+r+'_s'+j); setC('st_'+j,s); stTotal+=s; scTotal+=num('sc_'+j); }
+        setC('b_cash',tcs);setC('b_credit',tcr);setC('b_tf',ttf);setC('b_shopTotal',tf);
+        setC('b_staffTotal',stTotal); setC('b_net', tf-stTotal);
+        setC('b_cash2',tcs); setC('b_change2', num('hdr_change')); setC('b_staffCash',scTotal);
+        setC('b_total', tcs + num('hdr_change') - scTotal - num('b_misc'));
+      }
+      var timer=null, status=document.getElementById('savestatus');
+      function schedule(){ if(timer)clearTimeout(timer); if(status)status.textContent='Saving…'; timer=setTimeout(save,700); }
+      async function save(){
+        var data={}; inputs.forEach(function(el){ if(!el.classList.contains('calc')&&el.value!=='') data[el.dataset.k]=el.value; });
+        try{ var r=await fetch('/dashboard/day-sheet/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:D.date,data:data})});
+          if(status)status.textContent=r.ok?'Saved ✓':'Save failed'; }catch(e){ if(status)status.textContent='Save failed'; }
+      }
+      inputs.forEach(function(el){ if(!el.classList.contains('calc')) el.addEventListener('input',function(){calc();schedule();}); });
+      var sb=document.getElementById('savebtn'); if(sb)sb.addEventListener('click',function(){calc();save();});
+      calc();
+    })();
+    </script>
   `, { lang: c.get('lang'), css }))
+})
+
+// Save an editable day sheet (manual cash/commission entries).
+app.post('/day-sheet/save', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  let body; try { body = await c.req.json() } catch { return c.json({ error: 'bad json' }, 400) }
+  const date = (body.date || '').toString()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: 'bad date' }, 400)
+  const data = JSON.stringify(body.data && typeof body.data === 'object' ? body.data : {})
+  if (data.length > 60000) return c.json({ error: 'too large' }, 413)
+  await db.prepare('INSERT INTO day_sheets (shop_id,date,data,updated_at) VALUES (?,?,?,unixepoch()) ON CONFLICT(shop_id,date) DO UPDATE SET data=excluded.data, updated_at=unixepoch()')
+    .bind(shop.id, date, data).run()
+  return c.json({ ok: true })
+})
+
+// Discard saved entries for a day and reload fresh from the calendar.
+app.post('/day-sheet/reset', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const f = await c.req.parseBody()
+  const date = (f.date || '').toString()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date)) await db.prepare('DELETE FROM day_sheets WHERE shop_id=? AND date=?').bind(shop.id, date).run()
+  return c.redirect(`/dashboard/day-sheet?date=${/^\d{4}-\d{2}-\d{2}$/.test(date) ? date : ''}`)
 })
 
 // ─── Services ────────────────────────────────────────────────────────────────
