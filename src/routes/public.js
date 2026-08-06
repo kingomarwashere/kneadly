@@ -258,15 +258,16 @@ app.get('/:slug/book', async (c) => {
         <div class="field"><label>${t(lang, 'mobile')}</label><input name="phone" placeholder="${t(lang, 'optional')}"></div>
         <div class="field"><label>${t(lang, 'notes_label')}</label><textarea name="notes" rows="2" placeholder="${t(lang, 'notes_ph')}"></textarea></div>
 
-        <div class="field"><label>👥 ${t(lang, 'group_q')}</label>
-          <select name="people" id="people">${[1, 2, 3, 4].map(n => `<option value="${n}">${n}</option>`).join('')}</select>
+        <div class="field" style="margin-bottom:2px"><label>👥 ${t(lang, 'group_q')}</label>
+          <p class="muted" style="font-size:.83rem;margin:.2em 0 0">${t(lang, 'same_time_note')}</p>
         </div>
-        ${[2, 3, 4].map(n => `<div class="guestx" data-n="${n}" style="display:none;border-top:1px dashed var(--line);padding-top:10px;margin-bottom:6px">
-          <div class="muted" style="font-size:.85rem;margin-bottom:6px">${t(lang, 'guest')} ${n}</div>
+        ${[2, 3, 4].map(n => `<div class="guestx" data-n="${n}" style="display:none;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0">
+          <div class="inline" style="justify-content:space-between;align-items:center;margin-bottom:8px"><strong>${t(lang, 'guest')} ${n}</strong><button type="button" class="btn ghost sm rmperson">${t(lang, 'remove_word')}</button></div>
           <div class="field"><label>${t(lang, 'full_name')}</label><input name="guest_name_${n}"></div>
           <div class="field"><label>${t(lang, 'services')}</label><select name="guest_service_${n}"><option value="">—</option>${allServices.map(s => `<option value="${s.id}">${esc(s.name)} · ${s.duration_minutes} ${t(lang, 'min')}</option>`).join('')}</select></div>
-          <div class="field"><label>${t(lang, 'c_therapist')}</label><select name="guest_staff_${n}"><option value="any">✨ ${t(lang, 'anyone')}</option>${groupStaff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
+          <div class="field" style="margin-bottom:0"><label>${t(lang, 'c_therapist')}</label><select name="guest_staff_${n}"><option value="any">✨ ${t(lang, 'anyone')}</option>${groupStaff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
         </div>`).join('')}
+        <button type="button" class="btn ghost sm" id="addperson" style="margin-bottom:6px">➕ ${t(lang, 'add_person')}</button>
 
         <div id="depositcard" class="card" style="padding:14px 16px;background:#f6f2ec;border-style:dashed;margin-bottom:16px">
           ${depositCents > 0
@@ -309,8 +310,17 @@ app.get('/:slug/book', async (c) => {
         submitEl.disabled=false;submitEl.textContent=T.confirm};timesEl.appendChild(b)});
   }
   staffEl.onchange=loadDates;loadDates();
-  var people=document.getElementById('people'),depc=document.getElementById('depositcard');
-  if(people)people.addEventListener('change',function(){var n=+people.value;document.querySelectorAll('.guestx').forEach(function(g){g.style.display=(+g.dataset.n<=n)?'':'none';});if(depc)depc.style.display=(n>1)?'none':'';});
+  // Couple / group guests: reveal one block at a time with "add another person".
+  var addBtn=document.getElementById('addperson'),depc=document.getElementById('depositcard');
+  var guestBlocks=[].slice.call(document.querySelectorAll('.guestx'));
+  function shownGuests(){return guestBlocks.filter(function(g){return g.style.display!=='none';});}
+  function syncGuests(){var hidden=guestBlocks.filter(function(g){return g.style.display==='none';});
+    if(addBtn)addBtn.style.display=hidden.length?'':'none';
+    if(depc)depc.style.display=shownGuests().length?'none':'';}
+  if(addBtn)addBtn.addEventListener('click',function(){var hidden=guestBlocks.filter(function(g){return g.style.display==='none';});if(hidden.length)hidden[0].style.display='';syncGuests();});
+  document.querySelectorAll('.rmperson').forEach(function(b){b.addEventListener('click',function(){var g=b.closest('.guestx');g.style.display='none';
+    g.querySelectorAll('input').forEach(function(i){i.value='';});g.querySelectorAll('select').forEach(function(s){s.selectedIndex=0;});syncGuests();});});
+  syncGuests();
   </script>
   `, { accent: shop.accent, lang }))
 })

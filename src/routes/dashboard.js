@@ -254,6 +254,7 @@ async function renderWeekRoster(c) {
       <div class="inline" style="gap:12px"><h2 style="margin:0">Roster</h2>${vtoggle('week', today, weekStart)}</div>
       <div class="inline" style="gap:8px;flex-wrap:wrap"><a class="btn sm" href="/dashboard/bookings/new?date=${weekStart}">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new?date=${weekStart}">👥 Group</a>${nav}</div>
     </div>
+    <div class="inline" style="gap:8px;align-items:center;margin:10px 0 0"><span class="muted" style="font-size:.85rem">📅 Jump to</span><input type="date" value="${weekStart}" onchange="if(this.value){var d=new Date(this.value+'T12:00:00Z'),g=d.getUTCDay();d.setUTCDate(d.getUTCDate()+(g===0?-6:1-g));location.href='/dashboard/roster?view=week&week='+d.toISOString().slice(0,10);}" aria-label="Jump to week" style="padding:7px 10px;border:1px solid var(--line);border-radius:9px;font:inherit;max-width:180px"></div>
     <div class="muted" style="margin:6px 0 12px">${label} · ${bookings.length} booking${bookings.length === 1 ? '' : 's'}</div>
     <div class="rgrid">${cols}</div>
   `)
@@ -317,6 +318,7 @@ async function renderDayRoster(c) {
       <div class="inline" style="gap:12px"><h2 style="margin:0">Roster</h2>${vtoggle('day', date, monOf(date))}</div>
       <div class="inline" style="gap:8px;flex-wrap:wrap"><a class="btn sm" href="/dashboard/bookings/new?date=${date}">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new?date=${date}">👥 Group</a>${nav}</div>
     </div>
+    <div class="inline" style="gap:8px;align-items:center;margin:10px 0 0"><span class="muted" style="font-size:.85rem">📅 Jump to</span><input type="date" value="${date}" onchange="if(this.value)location.href='/dashboard/roster?view=day&date='+this.value" aria-label="Jump to date" style="padding:7px 10px;border:1px solid var(--line);border-radius:9px;font:inherit;max-width:180px"></div>
     <div class="muted" style="margin:6px 0 12px">${heading}${date === today ? ' · today' : ''} · ${bookings.length} booking${bookings.length === 1 ? '' : 's'} · <span style="font-size:.9em">drag a booking to reschedule · click a slot to add</span></div>
     ${n ? `<div class="dg" style="grid-template-columns:52px repeat(${n},minmax(130px,1fr))">
       <div class="dg-corner"></div>${cols.map(x => x.head).join('')}
