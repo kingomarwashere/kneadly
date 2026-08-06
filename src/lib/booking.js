@@ -1,7 +1,50 @@
-import { generateSlots, getDayOfWeek, dateTzString } from './slots.js'
+import { generateSlots, getDayOfWeek, dateTzString, localToUtcMs } from './slots.js'
 
 export async function getShopBySlug(db, slug) {
   return db.prepare('SELECT * FROM shops WHERE slug = ?').bind(slug).first()
+}
+
+const toMin = t => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m }
+const fmtHM = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+
+// Shop opening hours for a weekday (0=Sun..6=Sat), parsed from shops.hours_json.
+// Returns: undefined = no shop hours configured (no constraint) · null = closed
+// that day · { open:'HH:MM', close:'HH:MM' } otherwise.
+export function shopHoursFor(shop, dow) {
+  if (!shop || !shop.hours_json) return undefined
+  let h
+  try { h = JSON.parse(shop.hours_json) } catch { return undefined }
+  if (!h || typeof h !== 'object') return undefined
+  const v = h[dow] ?? h[String(dow)]
+  if (!v || !v[0] || !v[1]) return null
+  return { open: v[0], close: v[1] }
+}
+
+// Intersect a therapist's availability window with the shop's opening hours for
+// that weekday. Returns a { start_time, end_time } window, or null if the shop
+// is closed / there is no overlap. If no shop hours are set, returns avail as-is.
+export function clampAvail(shop, dow, avail) {
+  const sh = shopHoursFor(shop, dow)
+  if (sh === undefined) return avail
+  if (sh === null) return null
+  const s = Math.max(toMin(avail.start_time), toMin(sh.open))
+  const e = Math.min(toMin(avail.end_time), toMin(sh.close))
+  if (e <= s) return null
+  return { ...avail, start_time: fmtHM(s), end_time: fmtHM(e) }
+}
+
+// Cheap "does at least one bookable slot exist?" for a clamped window on a date.
+// Uses start-of-day unix + minute offset (avoids per-slot Intl); good enough for
+// deciding whether a DATE should be offered (the real list uses generateSlots).
+function hasAnySlot(win, bookings, dayStartSec, durationMin, interval, nowSec) {
+  const s0 = toMin(win.start_time), e0 = toMin(win.end_time)
+  for (let cur = s0; cur + durationMin <= e0; cur += interval) {
+    const startSec = dayStartSec + cur * 60
+    if (startSec <= nowSec) continue
+    const endSec = startSec + durationMin * 60
+    if (!bookings.some(b => b.start_time < endSec && b.end_time > startSec)) return true
+  }
+  return false
 }
 
 // Active staff who can perform a service. If nobody is explicitly linked to the
@@ -66,11 +109,14 @@ export async function slotsForDate(db, shop, service, staffId, dateStr) {
     const off = await db.prepare(
       'SELECT 1 FROM time_off WHERE staff_id = ? AND date = ?').bind(st.id, dateStr).first()
     if (off) continue
+    // Constrain to the shop's opening hours (skip if closed / no overlap).
+    const win = clampAvail(shop, dow, avail)
+    if (!win) continue
     const booked = await db.prepare(
       `SELECT start_time, end_time FROM bookings
        WHERE staff_id = ? AND status IN ('pending_payment','confirmed','completed')
        AND start_time BETWEEN ? AND ?`).bind(st.id, dayStart, dayEnd).all()
-    const slots = generateSlots(avail, booked.results || [], dateStr, service.duration_minutes, shop.timezone, shop.slot_interval_minutes)
+    const slots = generateSlots(win, booked.results || [], dateStr, service.duration_minutes, shop.timezone, shop.slot_interval_minutes)
     for (const s of slots) {
       if (!byTime.has(s.time)) byTime.set(s.time, { ...s, staffIds: [] })
       byTime.get(s.time).staffIds.push(st.id)
@@ -79,31 +125,52 @@ export async function slotsForDate(db, shop, service, staffId, dateStr) {
   return [...byTime.values()].sort((a, b) => a.unix - b.unix)
 }
 
-// Dates within the next `daysAhead` that have at least one open slot pattern.
-// A date qualifies only if some eligible therapist works that weekday AND has
-// not marked that specific date as a day off.
+// Dates within the next `daysAhead` that have at least one ACTUALLY bookable
+// slot — i.e. some eligible therapist works that weekday, isn't off, the shop is
+// open, and a free gap remains after the booking lead time. This deliberately
+// excludes "today" once the day is over and any fully-booked day, so the date
+// picker never offers a date that then shows "fully booked".
 export async function availableDates(db, shop, service, staffId, daysAhead = 45) {
   let staff = await eligibleStaff(db, shop.id, service.id)
   if (staffId && staffId !== 'any') staff = staff.filter(s => s.id === staffId)
   if (!staff.length) return []
 
-  // Preload each therapist's working weekdays + booked-off dates once.
+  const tz = shop.timezone
+  const interval = Math.max(5, Number(shop.slot_interval_minutes) || 15)
+  const nowSec = Math.floor(Date.now() / 1000) + 30 * 60 // 30-min lead time
+  const windowEnd = nowSec + (daysAhead + 2) * 86400
+
+  // Preload per therapist: availability by weekday, days off, and the bookings
+  // that could collide within the search window — so the date loop is pure CPU.
   const info = []
   for (const st of staff) {
-    const dows = new Set(((await db.prepare('SELECT day_of_week FROM availability WHERE staff_id = ?').bind(st.id).all()).results || []).map(r => r.day_of_week))
+    const availByDow = {}
+    for (const a of ((await db.prepare('SELECT day_of_week,start_time,end_time FROM availability WHERE staff_id = ?').bind(st.id).all()).results || [])) availByDow[a.day_of_week] = a
     const off = new Set(((await db.prepare('SELECT date FROM time_off WHERE staff_id = ?').bind(st.id).all()).results || []).map(r => r.date))
-    info.push({ dows, off })
+    const bookings = (await db.prepare(
+      `SELECT start_time,end_time FROM bookings WHERE staff_id = ?
+       AND status IN ('pending_payment','confirmed','completed') AND end_time > ? AND start_time < ?`
+    ).bind(st.id, nowSec - 86400, windowEnd).all()).results || []
+    info.push({ availByDow, off, bookings })
   }
 
   const out = []
   const now = new Date()
-  const todayStr = dateTzString(now, shop.timezone)
+  const todayStr = dateTzString(now, tz)
   for (let i = 0; i <= daysAhead; i++) {
-    const d = new Date(now.getTime() + i * 86400000)
-    const ds = dateTzString(d, shop.timezone)
+    const ds = dateTzString(new Date(now.getTime() + i * 86400000), tz)
     if (ds < todayStr) continue
-    const dow = getDayOfWeek(ds, shop.timezone)
-    if (info.some(x => x.dows.has(dow) && !x.off.has(ds))) out.push(ds)
+    const dow = getDayOfWeek(ds, tz)
+    const dayStartSec = Math.floor(localToUtcMs(ds, '00:00', tz) / 1000)
+    let ok = false
+    for (const x of info) {
+      const avail = x.availByDow[dow]
+      if (!avail || x.off.has(ds)) continue
+      const win = clampAvail(shop, dow, avail)
+      if (!win) continue
+      if (hasAnySlot(win, x.bookings, dayStartSec, service.duration_minutes, interval, nowSec)) { ok = true; break }
+    }
+    if (ok) out.push(ds)
   }
   return out
 }

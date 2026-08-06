@@ -6,7 +6,7 @@ import { stripeClient } from '../lib/stripe.js'
 import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTherapistInvite, sendReviewRequest } from '../lib/email.js'
 import { findOrCreateClient } from '../lib/clients.js'
 import { loyaltyStatus, tierDiscount, tierLabel, getTiers, loyaltyAvailByClient } from '../lib/loyalty.js'
-import { freeTherapist, therapistFreeAt } from '../lib/booking.js'
+import { freeTherapist, therapistFreeAt, shopHoursFor } from '../lib/booking.js'
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -275,9 +275,11 @@ async function renderDayRoster(c) {
   const bookings = (await db.prepare(`SELECT * FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? AND status!='cancelled' ORDER BY start_time`).bind(shop.id, dayStartU, dayStartU + 86400).all()).results || []
   const bkByStaff = {}; for (const b of bookings) (bkByStaff[b.staff_id] ||= []).push(b)
 
-  // Grid time range: fit availability + any bookings, default 9–18, snapped to the hour.
+  // Grid time range: base on the shop's opening hours for this weekday (falling
+  // back to 9–18), then widen to fit availability + any bookings.
   const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m }
-  let lo = 9 * 60, hi = 18 * 60
+  const sh = shopHoursFor(shop, dow)
+  let lo = sh ? toMin(sh.open) : 9 * 60, hi = sh ? toMin(sh.close) : 18 * 60
   for (const st of staff) { const a = availByStaff[st.id]; if (a && !offIds.has(st.id)) { lo = Math.min(lo, toMin(a.start_time)); hi = Math.max(hi, toMin(a.end_time)) } }
   for (const b of bookings) { lo = Math.min(lo, minsOfDay(b.start_time, tz)); hi = Math.max(hi, minsOfDay(b.end_time, tz)) }
   const gridStart = Math.max(0, Math.floor(lo / 60) * 60), gridEnd = Math.min(24 * 60, Math.ceil(hi / 60) * 60)
@@ -328,20 +330,26 @@ async function renderDayRoster(c) {
       const fmt=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
       let d=null;
       document.querySelectorAll('.dblock').forEach(el=>{
-        el.addEventListener('pointerdown',e=>{ if(e.button!==0)return; e.preventDefault();
-          d={el,moved:false,sx:e.clientX,sy:e.clientY,startTop:parseFloat(el.style.top)||0}; el.setPointerCapture(e.pointerId); });
+        el.addEventListener('pointerdown',e=>{ if(e.button>0)return; e.preventDefault();
+          const r=el.getBoundingClientRect();
+          d={el,moved:false,sx:e.clientX,sy:e.clientY,offX:e.clientX-r.left,offY:e.clientY-r.top,w:r.width,origin:el.parentElement,tCol:el.parentElement};
+          try{el.setPointerCapture(e.pointerId);}catch(_){} });
         el.addEventListener('pointermove',e=>{ if(!d||d.el!==el)return;
-          if(Math.abs(e.clientX-d.sx)>4||Math.abs(e.clientY-d.sy)>4)d.moved=true;
-          if(!d.moved)return; el.classList.add('dragging');
-          const body=el.parentElement, br=body.getBoundingClientRect();
-          let top=Math.max(0,Math.min(e.clientY-br.top-12, body.clientHeight-el.offsetHeight));
-          el.style.top=top+'px'; d.curTop=top;
-          const col=el.dataset.locked?el.parentElement:colUnder(e.clientX); bodies.forEach(b=>b.classList.toggle('dropcol',b===col)); });
+          if(!d.moved && (Math.abs(e.clientX-d.sx)>4||Math.abs(e.clientY-d.sy)>4)){ d.moved=true;
+            // Detach into a floating card so it can travel across columns under the finger/cursor.
+            el.classList.add('dragging'); el.style.position='fixed'; el.style.margin='0';
+            el.style.width=d.w+'px'; el.style.right='auto'; el.style.zIndex='9999'; }
+          if(!d.moved)return;
+          el.style.left=(e.clientX-d.offX)+'px'; el.style.top=(e.clientY-d.offY)+'px';
+          const col=el.dataset.locked?d.origin:(colUnder(e.clientX)||d.origin); d.tCol=col;
+          bodies.forEach(b=>b.classList.toggle('dropcol',b===col)); });
         el.addEventListener('pointerup',async e=>{ if(!d||d.el!==el)return;
-          el.releasePointerCapture(e.pointerId); bodies.forEach(b=>b.classList.remove('dropcol')); el.classList.remove('dragging');
-          if(!d.moved){ location.href=el.dataset.edit; d=null; return; }
-          const col=el.dataset.locked?el.parentElement:(colUnder(e.clientX)||el.parentElement);
-          const mins=GRID_START+Math.round((d.curTop!=null?d.curTop:d.startTop)/INTERVAL)*INTERVAL;
+          try{el.releasePointerCapture(e.pointerId);}catch(_){}
+          bodies.forEach(b=>b.classList.remove('dropcol'));
+          if(!d.moved){ el.classList.remove('dragging'); location.href=el.dataset.edit; d=null; return; }
+          const col=d.tCol||d.origin, cr=col.getBoundingClientRect();
+          let topInCol=Math.max(0,Math.min((e.clientY-d.offY)-cr.top, col.clientHeight-el.offsetHeight));
+          const mins=GRID_START+Math.round(topInCol/INTERVAL)*INTERVAL;
           const staff=col.dataset.staff, url=el.dataset.move; d=null;
           try{ var resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({date:DATE,staff_id:staff,start:fmt(mins)})}); if(resp&&!resp.ok){ alert('That therapist is already booked at that time — the appointment was left where it was.'); } }catch(_){}
           location.reload(); });
@@ -890,7 +898,13 @@ app.get('/group-slots', async (c) => {
 
   const avails = (await db.prepare('SELECT a.staff_id,a.start_time,a.end_time FROM availability a JOIN staff s ON s.id=a.staff_id WHERE s.shop_id=? AND s.is_active=1 AND a.day_of_week=?').bind(shop.id, dow).all()).results || []
   const offIds = new Set(((await db.prepare('SELECT t.staff_id FROM time_off t JOIN staff s ON s.id=t.staff_id WHERE s.shop_id=? AND t.date=?').bind(shop.id, date).all()).results || []).map(o => o.staff_id))
-  const windows = avails.filter(a => !offIds.has(a.staff_id)).map(a => ({ staff: a.staff_id, s: toMin(a.start_time), e: toMin(a.end_time) }))
+  // Constrain to the shop's opening hours for this weekday (closed → no windows).
+  const sh = shopHoursFor(shop, dow)
+  if (sh === null) return c.json({ slots: [] })
+  const clampS = sh ? toMin(sh.open) : 0, clampE = sh ? toMin(sh.close) : 24 * 60
+  const windows = avails.filter(a => !offIds.has(a.staff_id))
+    .map(a => ({ staff: a.staff_id, s: Math.max(toMin(a.start_time), clampS), e: Math.min(toMin(a.end_time), clampE) }))
+    .filter(w => w.e > w.s)
   if (!windows.length) return c.json({ slots: [] })
   const dayStart = Math.min(...windows.map(w => w.s)), dayEnd = Math.max(...windows.map(w => w.e))
 
@@ -1150,6 +1164,29 @@ app.get('/settings', async (c) => {
         <p class="muted" style="font-size:.82rem;margin:0">Set deposit to 0% to take bookings with no upfront payment. <strong>Booking time interval</strong> controls how far apart the offered start times are — choose 5 minutes for the finest control.</p>
       </div>
       <div class="card" style="padding:22px;margin-bottom:18px">
+        <h3 style="margin-top:0">🕑 Opening hours</h3>
+        <p class="muted" style="font-size:.82rem;margin:0 0 12px">When the shop is open. Bookings — online, group and roster — are only ever offered inside these hours. Untick a day to mark it closed. (Each therapist can still have shorter hours within these.)</p>
+        ${(() => {
+          let hrs = {}; try { hrs = shop.hours_json ? JSON.parse(shop.hours_json) : {} } catch { hrs = {} }
+          const configured = shop.hours_json != null
+          const days = [[1, 'Monday'], [2, 'Tuesday'], [3, 'Wednesday'], [4, 'Thursday'], [5, 'Friday'], [6, 'Saturday'], [0, 'Sunday']]
+          return days.map(([d, label]) => {
+            const v = hrs[d] ?? hrs[String(d)]
+            // Default (never configured): open 9–6 Mon–Sat, Sunday closed.
+            const open = v ? v[0] : (configured ? '' : '09:00')
+            const close = v ? v[1] : (configured ? '' : '18:00')
+            const isOpen = v ? true : (configured ? false : d !== 0)
+            return `<div class="inline hrrow" data-d="${d}" style="gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+              <label style="display:flex;align-items:center;gap:7px;font-weight:400;min-width:132px;cursor:pointer"><input type="checkbox" class="hropen" name="hours_open_${d}" value="1" style="width:auto" ${isOpen ? 'checked' : ''}> <strong>${label}</strong></label>
+              <span class="hrtimes" style="display:inline-flex;gap:6px;align-items:center${isOpen ? '' : ';opacity:.4'}">
+                <input type="time" name="hours_from_${d}" value="${open || '09:00'}" style="max-width:130px"> <span class="muted">to</span> <input type="time" name="hours_to_${d}" value="${close || '18:00'}" style="max-width:130px">
+              </span>
+            </div>`
+          }).join('')
+        })()}
+        <script>document.querySelectorAll('.hrrow').forEach(function(row){var cb=row.querySelector('.hropen'),tw=row.querySelector('.hrtimes');function sync(){tw.style.opacity=cb.checked?'':'0.4';tw.querySelectorAll('input').forEach(function(i){i.disabled=!cb.checked;});}cb.addEventListener('change',sync);sync();});</script>
+      </div>
+      <div class="card" style="padding:22px;margin-bottom:18px">
         <h3 style="margin-top:0">Reviews</h3>
         <div class="field"><label>Google review link</label><input name="google_review_url" value="${f('google_review_url')}" placeholder="https://g.page/r/…/review"></div>
         <p class="muted" style="font-size:.82rem;margin:0">After a visit, clients are asked for a review (kept in <a href="/dashboard/reviews">Reviews</a>). Happy clients (4–5★) are then offered this Google link. Get it from your Google Business Profile → “Ask for reviews”.</p>
@@ -1185,13 +1222,25 @@ app.post('/settings', async (c) => {
   if (clash) slug = `${slug}-${shop.id.slice(0, 4)}`
 
   const interval = [5, 10, 15, 20, 30, 60].includes(parseInt(f.slot_interval_minutes)) ? parseInt(f.slot_interval_minutes) : 15
+
+  // Opening hours → { weekday: ["HH:MM","HH:MM"] }; a day is closed if unticked
+  // or its times are invalid. Stored as JSON on the shop row.
+  const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/
+  const hours = {}
+  for (let d = 0; d <= 6; d++) {
+    if (!f[`hours_open_${d}`]) continue
+    const from = (f[`hours_from_${d}`] || '').toString(), to = (f[`hours_to_${d}`] || '').toString()
+    if (HHMM.test(from) && HHMM.test(to) && to > from) hours[d] = [from, to]
+  }
+  const hoursJson = JSON.stringify(hours)
+
   await db.prepare(`UPDATE shops SET name=?, emoji=?, tagline=?, about=?, slug=?, accent=?, phone=?, email=?,
-    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, google_review_url=?, loyalty_enabled=? WHERE id=?`)
+    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, hours_json=?, google_review_url=?, loyalty_enabled=? WHERE id=?`)
     .bind((f.name || shop.name).toString().trim(), (f.emoji || '💆').toString().trim() || '💆',
       (f.tagline || '').toString(), (f.about || '').toString(), slug, (f.accent || '#0f766e').toString(),
       (f.phone || '').toString(), (f.email || '').toString(), (f.address || '').toString(),
       (f.suburb || '').toString(), (f.state || '').toString(), (f.postcode || '').toString(),
-      (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, interval, (f.google_review_url || '').toString().trim() || null,
+      (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, interval, hoursJson, (f.google_review_url || '').toString().trim() || null,
       f.loyalty_enabled ? 1 : 0, shop.id).run()
 
   // Replace loyalty tiers from the form rows.

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS shops (
   deposit_pct INTEGER NOT NULL DEFAULT 20,   -- % of service price taken as deposit
   cancellation_hours INTEGER NOT NULL DEFAULT 24,
   slot_interval_minutes INTEGER NOT NULL DEFAULT 15,  -- spacing between bookable start times
+  hours_json TEXT,               -- opening hours: {"0":["09:00","18:00"],...} keyed by weekday (0=Sun); null/missing day = closed
   google_review_url TEXT,        -- shop's Google review link (for the review handoff)
   loyalty_enabled INTEGER NOT NULL DEFAULT 0,
   loyalty_threshold INTEGER NOT NULL DEFAULT 5,   -- completed visits per reward

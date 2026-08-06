@@ -215,6 +215,8 @@ app.get('/:slug/book', async (c) => {
   // All services (translated) for the couple/group guest pickers.
   const allServices = (await db.prepare('SELECT id,name,duration_minutes FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
   await Promise.all(allServices.map(async s => { s.name = await translate(c.env, s.name, lang) }))
+  // Every active therapist — for the per-guest therapist picker in group bookings.
+  const groupStaff = (await db.prepare('SELECT id,name,emoji FROM staff WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
 
   const T = {
     loading: t(lang, 'loading'),
@@ -263,6 +265,7 @@ app.get('/:slug/book', async (c) => {
           <div class="muted" style="font-size:.85rem;margin-bottom:6px">${t(lang, 'guest')} ${n}</div>
           <div class="field"><label>${t(lang, 'full_name')}</label><input name="guest_name_${n}"></div>
           <div class="field"><label>${t(lang, 'services')}</label><select name="guest_service_${n}"><option value="">—</option>${allServices.map(s => `<option value="${s.id}">${esc(s.name)} · ${s.duration_minutes} ${t(lang, 'min')}</option>`).join('')}</select></div>
+          <div class="field"><label>${t(lang, 'c_therapist')}</label><select name="guest_staff_${n}"><option value="any">✨ ${t(lang, 'anyone')}</option>${groupStaff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
         </div>`).join('')}
 
         <div id="depositcard" class="card" style="padding:14px 16px;background:#f6f2ec;border-style:dashed;margin-bottom:16px">
@@ -345,7 +348,7 @@ app.post('/:slug/book', async (c) => {
 
   // Couple / group booking: resolve each extra guest to a free therapist at the
   // same start time. Build the full list of bookings to create (primary first).
-  const guestSpecs = [2, 3, 4].map(n => ({ sid: (form[`guest_service_${n}`] || '').toString(), name: (form[`guest_name_${n}`] || '').toString().trim() || `Guest ${n}` })).filter(g => g.sid)
+  const guestSpecs = [2, 3, 4].map(n => ({ sid: (form[`guest_service_${n}`] || '').toString(), name: (form[`guest_name_${n}`] || '').toString().trim() || `Guest ${n}`, staff: (form[`guest_staff_${n}`] || '').toString() })).filter(g => g.sid)
   const isGroup = guestSpecs.length > 0
   const groupId = isGroup ? genId() : null
 
@@ -356,12 +359,17 @@ app.post('/:slug/book', async (c) => {
       const gsvc = await db.prepare('SELECT * FROM services WHERE id=? AND shop_id=? AND is_active=1').bind(g.sid, shop.id).first()
       if (!gsvc) continue
       const gslot = (await slotsForDate(db, shop, gsvc, 'any', dateStr)).find(s => s.unix === startUnix)
-      const gStaff = gslot && gslot.staffIds.find(id => !usedIds.has(id))
+      if (!gslot) continue
+      // Honour the guest's chosen therapist if they're genuinely free & unused;
+      // otherwise assign any free one. A specific pick is a "request" (locked).
+      let gStaff = null, gReq = 0
+      if (g.staff && g.staff !== 'any' && gslot.staffIds.includes(g.staff) && !usedIds.has(g.staff)) { gStaff = g.staff; gReq = 1 }
+      if (!gStaff) gStaff = gslot.staffIds.find(id => !usedIds.has(id))
       if (!gStaff) continue
       usedIds.add(gStaff)
       const gRow = await db.prepare('SELECT name FROM staff WHERE id=?').bind(gStaff).first()
       const gClient = await findOrCreateClient(db, shop.id, { name: g.name })
-      items.push({ service: gsvc, staffId: gStaff, staffName: gRow?.name || '', name: g.name, email: '', phone: '', notes: '', clientId: gClient, requested: 0 })
+      items.push({ service: gsvc, staffId: gStaff, staffName: gRow?.name || '', name: g.name, email: '', phone: '', notes: '', clientId: gClient, requested: gReq })
     }
   }
 
