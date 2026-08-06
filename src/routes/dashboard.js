@@ -31,7 +31,7 @@ app.use('*', async (c, next) => {
 function shell(c, active, title, body, notice) {
   const shop = c.get('shop')
   const tab = (id, label) => `<a href="/dashboard${id ? '/' + id : ''}" class="dtab${active === id ? ' on' : ''}">${label}</a>`
-  return c.html(layout(`${title} — Alisa`, `
+  return c.html(layout('Alisa', `
   <div class="dwrap">
     <aside class="dside">
       <a class="brand" href="/dashboard" style="padding:6px 10px 14px">💆 Alisa</a>
