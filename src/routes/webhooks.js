@@ -36,6 +36,12 @@ app.post('/stripe', async (c) => {
     const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first()
     if (!booking) return c.json({ ok: true })
 
+    // A "take payment" QR/link session (not a deposit) — just record the amount.
+    if (session.metadata?.kind === 'balance') {
+      await db.prepare('UPDATE bookings SET paid_cents = COALESCE(paid_cents,0) + ? WHERE id=?').bind(session.amount_total || 0, bookingId).run()
+      return c.json({ ok: true })
+    }
+
     let chargeId = null
     try {
       const pi = await stripeClient(c.env.STRIPE_SECRET_KEY).retrievePaymentIntent(session.payment_intent, { account })

@@ -4,6 +4,7 @@ import { getSession } from './lib/auth.js'
 import { resolveLang } from './lib/i18n.js'
 import { runReminders } from './lib/email.js'
 import { ICONS, pngResponse } from './lib/icons.js'
+import { layout } from './lib/views.js'
 import authRoutes from './routes/auth.js'
 import dashboardRoutes from './routes/dashboard.js'
 import apiRoutes from './routes/api.js'
@@ -108,6 +109,17 @@ app.get('/sitemap.xml', async (c) => {
     urls.push(`<url><loc>${base}/${r.slug}</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>`)
   return c.body(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.join('')}</urlset>`,
     200, { 'Content-Type': 'application/xml', 'Cache-Control': 'public, max-age=3600' })
+})
+
+// Public thank-you page a customer lands on after paying via a QR/link.
+app.get('/pay/thanks', (c) => {
+  const cancelled = c.req.query('cancelled')
+  return c.html(layout(cancelled ? 'Payment cancelled' : 'Payment received', `
+  <div class="wrap narrow" style="padding:64px 20px;text-align:center">
+    <div style="font-size:3.4rem">${cancelled ? '↩︎' : '✅'}</div>
+    <h1 style="font-size:1.8rem;margin:.3em 0">${cancelled ? 'Payment cancelled' : 'Payment received'}</h1>
+    <p class="muted">${cancelled ? 'No charge was made — you can close this page.' : 'Thank you! Your payment went through. You can close this page.'}</p>
+  </div>`, {}))
 })
 
 app.get('/healthz', (c) => c.json({ ok: true, app: 'alisa' }))

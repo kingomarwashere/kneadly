@@ -7,6 +7,10 @@ import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTher
 import { findOrCreateClient } from '../lib/clients.js'
 import { loyaltyStatus, tierDiscount, tierLabel, getTiers, loyaltyAvailByClient } from '../lib/loyalty.js'
 import { freeTherapist, therapistFreeAt, shopHoursFor, availStartTimes } from '../lib/booking.js'
+import qrcode from '../lib/qrcode.js'
+
+// QR code as an inline SVG string (error-correction M, auto version).
+const qrSvg = (text) => { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag(5, 2) }
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -787,10 +791,11 @@ app.get('/bookings/:id/edit', async (c) => {
     <h2>Edit / reschedule booking</h2>
     ${c.req.query('err') === 'busy' ? '<div class="notice err" style="max-width:580px;margin-bottom:10px">⚠️ That therapist is already booked over that time — pick another time or therapist.</div>' : ''}
     <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span>${b.loyalty_applied > 0 ? ` · 🎁 <strong>${money(b.loyalty_applied, shop.currency)} loyalty reward applied</strong>` : ''}${b.group_id ? ` · 👥 <strong>Group booking</strong>${b.room ? ` (${esc(b.room)})` : ''}` : ''}</p>
-    ${['confirmed', 'pending_payment'].includes(b.status) ? `<div class="inline" style="gap:8px;margin:0 0 14px;flex-wrap:wrap">
-      <form method="post" action="/dashboard/bookings/${b.id}/complete"><button class="btn sm">✓ Mark done</button></form>
+    ${['confirmed', 'pending_payment', 'completed'].includes(b.status) ? `<div class="inline" style="gap:8px;margin:0 0 14px;flex-wrap:wrap">
+      <a class="btn sm gold" href="/dashboard/bookings/${b.id}/pay">💳 Take payment</a>
+      ${['confirmed', 'pending_payment'].includes(b.status) ? `<form method="post" action="/dashboard/bookings/${b.id}/complete"><button class="btn sm">✓ Mark done</button></form>
       <form method="post" action="/dashboard/bookings/${b.id}/no_show"><button class="btn ghost sm">No-show</button></form>
-      <form method="post" action="/dashboard/bookings/${b.id}/cancel" onsubmit="return confirm('${b.group_id ? 'Cancel the whole group booking' : 'Cancel this booking'}${b.stripe_charge_id ? ' and refund the deposit' : ''}?')"><button class="btn danger sm">✕ Cancel booking</button></form>
+      <form method="post" action="/dashboard/bookings/${b.id}/cancel" onsubmit="return confirm('${b.group_id ? 'Cancel the whole group booking' : 'Cancel this booking'}${b.stripe_charge_id ? ' and refund the deposit' : ''}?')"><button class="btn danger sm">✕ Cancel booking</button></form>` : ''}
     </div>` : ''}
     <div class="grid g2" style="align-items:start">
       <div>${bookingForm(shop, staff, services, clients, `/dashboard/bookings/${b.id}/edit`, 'Save changes', v)}</div>
@@ -817,6 +822,97 @@ app.post('/bookings/:id/edit', async (c) => {
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
   }
   return c.redirect(`/dashboard/roster?week=${rosterWeekOf(r.date)}`)
+})
+
+// ─── Take payment: QR / link the customer scans to pay (card / Apple / Google) ─
+// What's already been collected for a booking (paid deposit + any QR payments).
+const collectedCents = (b) => ((b.stripe_charge_id && !b.refunded_at) ? (b.deposit_cents || 0) : 0) + (b.paid_cents || 0)
+
+app.get('/bookings/:id/pay', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (!b) return c.redirect('/dashboard/bookings')
+  const connected = c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled
+  const paid = collectedCents(b), remaining = Math.max(0, (b.price_cents || 0) - paid)
+  const cur = shop.currency
+  if (!connected) {
+    return shell(c, 'bookings', 'Take payment', `
+      <a href="/dashboard/bookings/${b.id}/edit" class="muted">← Back to booking</a>
+      <h2>💳 Take payment</h2>
+      <div class="notice err">Connect your Stripe account first (Settings → 💳 Payments) to take card payments. Until then you can only record cash on the <a href="/dashboard/day-sheet">day sheet</a>.</div>`)
+  }
+  return shell(c, 'bookings', 'Take payment', `
+    <a href="/dashboard/bookings/${b.id}/edit" class="muted">← Back to booking</a>
+    <h2>💳 Take payment</h2>
+    <div class="card" style="padding:20px;max-width:460px">
+      <div class="muted" style="margin-bottom:4px">${esc(b.customer_name)} · ${esc(b.service_name || '')}</div>
+      <div class="muted" style="font-size:.85rem;margin-bottom:14px">${formatBookingTime(b.start_time, shop.timezone)}</div>
+      <table style="width:100%;font-size:.9rem;margin-bottom:14px">
+        <tr><td class="muted">Price</td><td style="text-align:right">${money(b.price_cents || 0, cur)}</td></tr>
+        ${paid ? `<tr><td class="muted">Already paid</td><td style="text-align:right">− ${money(paid, cur)}</td></tr>` : ''}
+        <tr><td style="font-weight:600;padding-top:6px">Remaining</td><td style="text-align:right;font-weight:600;padding-top:6px">${money(remaining, cur)}</td></tr>
+      </table>
+      <form method="post" action="/dashboard/bookings/${b.id}/pay">
+        <div class="field"><label>Amount to charge (${cur.toUpperCase()})</label>
+          <input type="number" name="amount" min="1" step="0.01" value="${((remaining || b.price_cents || 0) / 100).toFixed(2)}" required style="max-width:180px"></div>
+        <button class="btn">Generate payment QR →</button>
+      </form>
+      <p class="muted" style="font-size:.8rem;margin:12px 0 0">The customer scans the QR (or you text them the link) and pays by card, Apple Pay or Google Pay. Alisa keeps a 1% fee; the rest goes to your Stripe.</p>
+    </div>`)
+})
+
+app.post('/bookings/:id/pay', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
+  const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(id, shop.id).first()
+  if (!b) return c.redirect('/dashboard/bookings')
+  if (!(c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled)) return c.redirect(`/dashboard/bookings/${id}/pay`)
+  const f = await c.req.parseBody()
+  const amount = Math.round(parseFloat((f.amount || '').toString()) * 100)
+  if (!amount || amount < 50) return c.redirect(`/dashboard/bookings/${id}/pay`)
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
+  const fee = Math.max(0, Math.round(amount * 0.01))
+  const paidBefore = collectedCents(b)
+  try {
+    const session = await stripeClient(c.env.STRIPE_SECRET_KEY).createCheckoutSession({
+      mode: 'payment',
+      success_url: `${base}/pay/thanks`,
+      cancel_url: `${base}/pay/thanks?cancelled=1`,
+      line_items: [{ quantity: 1, price_data: { currency: shop.currency, unit_amount: amount, product_data: { name: `${b.service_name || 'Appointment'} — ${shop.name}`, description: `${b.customer_name} · ${formatBookingTime(b.start_time, shop.timezone)}` } } }],
+      payment_intent_data: fee > 0 ? { application_fee_amount: fee } : undefined,
+      metadata: { booking_id: id, kind: 'balance' },
+      expires_at: Math.floor(Date.now() / 1000) + 3600
+    }, { account: shop.stripe_account_id })
+    const url = session.url
+    return shell(c, 'bookings', 'Take payment', `
+      <a href="/dashboard/bookings/${id}/edit" class="muted">← Back to booking</a>
+      <h2>💳 Scan to pay ${money(amount, shop.currency)}</h2>
+      <div class="card" style="padding:22px;max-width:420px;text-align:center">
+        <div id="paybox">
+          <div style="background:#fff;display:inline-block;padding:10px;border:1px solid var(--line);border-radius:12px">${qrSvg(url)}</div>
+          <p class="muted" style="font-size:.85rem;margin:12px 0 6px">${esc(b.customer_name)} scans this with their phone camera and pays by card, Apple Pay or Google Pay.</p>
+          <div class="inline" style="justify-content:center;gap:8px;flex-wrap:wrap">
+            <a class="btn ghost sm" href="${esc(url)}" target="_blank">Open link</a>
+            <button type="button" class="btn ghost sm" onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copied ✓'">Copy link</button>
+          </div>
+        </div>
+        <div id="paid" style="display:none"><div style="font-size:2.4rem">✅</div><h3 style="margin:.2em 0">Paid!</h3><a class="btn sm" href="/dashboard/bookings/${id}/edit">Back to booking</a></div>
+      </div>
+      <script>
+        var base=${paidBefore};
+        var t=setInterval(async function(){
+          try{ var r=await fetch('/dashboard/bookings/${id}/pay-status'); var j=await r.json();
+            if(j.collected>base){ clearInterval(t); document.getElementById('paybox').style.display='none'; document.getElementById('paid').style.display='block'; } }catch(e){}
+        }, 3000);
+      </script>`)
+  } catch (e) { console.error('pay session failed:', e.message); return c.redirect(`/dashboard/bookings/${id}/pay`) }
+})
+
+app.get('/bookings/:id/pay-status', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const b = await db.prepare('SELECT price_cents, deposit_cents, paid_cents, stripe_charge_id, refunded_at FROM bookings WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (!b) return c.json({ collected: 0 })
+  const collected = collectedCents(b)
+  return c.json({ collected, remaining: Math.max(0, (b.price_cents || 0) - collected) })
 })
 
 // ─── Group / couples booking ─────────────────────────────────────────────────

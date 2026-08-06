@@ -244,6 +244,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   stripe_session_id TEXT,
   stripe_payment_intent_id TEXT,
   stripe_charge_id TEXT,
+  paid_cents INTEGER NOT NULL DEFAULT 0,   -- extra in-person/QR payments collected (beyond any deposit)
   refunded_at INTEGER,
   reminder_sent_at INTEGER,       -- set once a day-before reminder email has gone out
   client_id TEXT,                 -- linked saved client (nullable)
