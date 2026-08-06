@@ -12,6 +12,7 @@ import webhookRoutes from './routes/webhooks.js'
 import therapistRoutes from './routes/therapist.js'
 import proRoutes from './routes/pro.js'
 import publicRoutes from './routes/public.js'
+import adminRoutes from './routes/admin.js'
 
 const app = new Hono()
 
@@ -97,7 +98,7 @@ self.addEventListener('fetch',e=>{e.respondWith(fetch(e.request));});`,
 
 app.get('/robots.txt', (c) => {
   const base = c.env.BASE_URL || 'https://alisa.bored.investments'
-  return c.text(`User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /api\nDisallow: /webhooks\nSitemap: ${base}/sitemap.xml`)
+  return c.text(`User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /admin\nDisallow: /api\nDisallow: /webhooks\nSitemap: ${base}/sitemap.xml`)
 })
 
 app.get('/sitemap.xml', async (c) => {
@@ -131,6 +132,7 @@ app.route('/', authRoutes)
 app.route('/dashboard', dashboardRoutes)
 app.route('/t', therapistRoutes)   // therapist self-service (secret token links)
 app.route('/pro', proRoutes)       // therapist login accounts (multi-shop)
+app.route('/admin', adminRoutes)   // platform admin (password-gated)
 app.route('/', publicRoutes)   // shop pages + booking flow live at the root, keep last
 
 // Cron: send day-before appointment reminders (see wrangler.toml [triggers]).
