@@ -1049,8 +1049,11 @@ app.get('/day-sheet', async (c) => {
     input.c.calc{font-weight:700;background:#f0efe9}
     input.c:focus{outline:2px solid var(--accent);outline-offset:-2px;background:#fffef8}
     sup{font-size:7px}
-    .recon{border:1.5px solid #000;border-top:none;padding:8px 8px 10px;font-size:11px;line-height:2.2}
-    .fillin{border:none;border-bottom:1px solid #000;border-radius:0;-webkit-appearance:none;appearance:none;width:8ch;font:inherit;font-size:11px;text-align:center;background:transparent;margin:0 3px;color:#000}
+    .recon{border:1.5px solid #000;border-top:none;padding:10px 10px 12px;font-size:11px}
+    .rline{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-bottom:10px}
+    .rline:last-child{margin-bottom:0}
+    .rline span{white-space:nowrap;display:inline-flex;align-items:center}
+    .fillin{display:inline-block;border:none;border-bottom:1px solid #000;border-radius:0;-webkit-appearance:none;appearance:none;width:58px;height:20px;line-height:20px;box-sizing:border-box;font:inherit;font-size:11px;text-align:center;background:transparent;margin:0 2px 0 4px;color:#000;vertical-align:middle}
     .fillin.b{font-weight:700}
     .fillin.calc{background:#f0efe9}
     .fillin:focus,.shead .meta input:focus{outline:none;background:#fffef8}
@@ -1090,8 +1093,14 @@ app.get('/day-sheet', async (c) => {
         </tbody>
       </table>
       <div class="recon">
-        <div>CASH ${fillin('b_cash', true)} + CREDIT ${fillin('b_credit', true)} + TF ${fillin('b_tf', true)} ( + FS ${fillin('b_fs')} ) = SHOP TOTAL ${fillin('b_shopTotal', true, true)} − STAFF TOTAL ${fillin('b_staffTotal', true)} = NET INCOME ${fillin('b_net', true, true)}</div>
-        <div>CASH ${fillin('b_cash2', true)} + CHANGE ${fillin('b_change2', true)} − STAFF CASH ${fillin('b_staffCash', true)} − MISC ${fillin('b_misc')} = TOTAL ${fillin('b_total', true, true)} &nbsp; ( KEEP ${fillin('b_keep')} / CHANGE ${fillin('b_change3')} )</div>
+        <div class="rline">
+          <span>CASH ${fillin('b_cash', true)}</span><span>+ CREDIT ${fillin('b_credit', true)}</span><span>+ TF ${fillin('b_tf', true)}</span><span>( + FS ${fillin('b_fs')} )</span>
+          <span>= SHOP TOTAL ${fillin('b_shopTotal', true, true)}</span><span>− STAFF TOTAL ${fillin('b_staffTotal', true)}</span><span>= NET INCOME ${fillin('b_net', true, true)}</span>
+        </div>
+        <div class="rline">
+          <span>CASH ${fillin('b_cash2', true)}</span><span>+ CHANGE ${fillin('b_change2', true)}</span><span>− STAFF CASH ${fillin('b_staffCash', true)}</span><span>− MISC ${fillin('b_misc')}</span>
+          <span>= TOTAL ${fillin('b_total', true, true)}</span><span>( KEEP ${fillin('b_keep')} / CHANGE ${fillin('b_change3')} )</span>
+        </div>
       </div>
     </div>
     <script>
@@ -1379,7 +1388,7 @@ app.get('/settings', async (c) => {
       <div class="card" style="padding:22px;margin-bottom:18px">
         <h3 style="margin-top:0">💳 Payments</h3>
         ${c.req.query('psaved') ? '<div class="notice ok" style="margin-bottom:10px">Stripe status updated.</div>' : ''}
-        ${c.req.query('perr') ? '<div class="notice err" style="margin-bottom:10px">Couldn’t reach Stripe just then — please try again.</div>' : ''}
+        ${c.req.query('perr') ? `<div class="notice err" style="margin-bottom:10px"><strong>Couldn’t start Stripe:</strong> ${esc(decodeURIComponent(c.req.query('perr')).slice(0, 300))}<br><span style="font-size:.85em">If this mentions Connect not being enabled, the platform owner needs to enable Connect (Express) in the Stripe dashboard first.</span></div>` : ''}
         ${(() => {
           const platform = !!c.env.STRIPE_SECRET_KEY
           const acct = shop.stripe_account_id, active = acct && shop.stripe_charges_enabled, started = acct && !shop.stripe_charges_enabled
@@ -1502,9 +1511,11 @@ app.post('/settings', async (c) => {
 // ─── Stripe Connect (Express) onboarding ─────────────────────────────────────
 const ONBOARD_LINK = (base) => ({ refresh_url: `${base}/dashboard/payments/refresh`, return_url: `${base}/dashboard/payments/return`, type: 'account_onboarding' })
 
+const perr = (msg) => `/dashboard/settings?perr=${encodeURIComponent(String(msg).slice(0, 300))}#pay`
+
 app.post('/payments/connect', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
-  if (!c.env.STRIPE_SECRET_KEY) return c.redirect('/dashboard/settings?perr=1')
+  if (!c.env.STRIPE_SECRET_KEY) return c.redirect(perr('Online payments are not enabled on this platform yet (no Stripe key configured).'))
   const sc = stripeClient(c.env.STRIPE_SECRET_KEY)
   const base = c.env.BASE_URL || 'https://alisa.bored.investments'
   try {
@@ -1522,7 +1533,7 @@ app.post('/payments/connect', async (c) => {
     }
     const link = await sc.createAccountLink({ account: acct, ...ONBOARD_LINK(base) })
     return c.redirect(link.url)
-  } catch (e) { console.error('connect failed:', e.message); return c.redirect('/dashboard/settings?perr=1') }
+  } catch (e) { console.error('connect failed:', e.message); return c.redirect(perr(e.message)) }
 })
 
 // Stripe bounces the owner back here after onboarding — refresh cached status.
@@ -1545,7 +1556,7 @@ app.get('/payments/refresh', async (c) => {
   try {
     const link = await stripeClient(c.env.STRIPE_SECRET_KEY).createAccountLink({ account: shop.stripe_account_id, ...ONBOARD_LINK(base) })
     return c.redirect(link.url)
-  } catch (e) { return c.redirect('/dashboard/settings?perr=1') }
+  } catch (e) { return c.redirect(perr(e.message)) }
 })
 
 // Express dashboard (payouts, etc.) via a single-use login link.
@@ -1555,7 +1566,7 @@ app.get('/payments/dashboard', async (c) => {
   try {
     const link = await stripeClient(c.env.STRIPE_SECRET_KEY).createLoginLink(shop.stripe_account_id)
     return c.redirect(link.url)
-  } catch (e) { return c.redirect('/dashboard/settings?perr=1') }
+  } catch (e) { return c.redirect(perr(e.message)) }
 })
 
 // ─── Reviews ─────────────────────────────────────────────────────────────────
