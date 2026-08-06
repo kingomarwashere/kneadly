@@ -1426,9 +1426,9 @@ app.get('/settings', async (c) => {
           if (active) return `<p style="margin:.2em 0"><span class="tag completed">✓ Connected</span> Deposits are on. Alisa keeps a <strong>1% platform fee</strong> on each deposit; the rest is paid straight into your own Stripe account.</p>
             <div class="inline"><a class="btn ghost sm" href="/dashboard/payments/dashboard" target="_blank">Open Stripe dashboard →</a></div>`
           if (started) return `<p style="margin:.2em 0"><span class="tag pending_payment">Setup incomplete</span> You started connecting Stripe but haven’t finished — deposits stay off until it’s done.</p>
-            <form method="post" action="/dashboard/payments/connect"><button class="btn sm">Finish Stripe setup →</button></form>`
+            <button type="submit" formaction="/dashboard/payments/connect" formmethod="post" formnovalidate class="btn sm">Finish Stripe setup →</button>`
           return `<p style="margin:.2em 0">Connect your Stripe account to collect booking deposits. Alisa keeps a <strong>1% platform fee</strong> per deposit; everything else goes straight to you. Until you connect, bookings are taken <strong>without a deposit</strong> (handy for testing).</p>
-            <form method="post" action="/dashboard/payments/connect"><button class="btn sm">Connect Stripe →</button></form>`
+            <button type="submit" formaction="/dashboard/payments/connect" formmethod="post" formnovalidate class="btn sm">Connect Stripe →</button>`
         })()}
         <p class="muted" style="font-size:.82rem;margin:12px 0 0">The deposit <em>amount</em> is set by <strong>Deposit (% of price)</strong> below — set it to 0% to skip deposits even when connected.</p>
       </div>
