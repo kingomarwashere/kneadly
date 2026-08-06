@@ -195,6 +195,8 @@ const ROSTER_CSS = `<style>
   .dblock{position:absolute;left:3px;right:3px;border-radius:8px;padding:3px 7px;font-size:.72rem;line-height:1.22;overflow:hidden;border-left:3px solid var(--accent);background:#eef4f3;cursor:grab;touch-action:none;z-index:1;box-shadow:0 1px 2px rgba(28,43,42,.08)}
   .dblock:hover{filter:brightness(.97)}
   .dblock.dragging{opacity:.9;cursor:grabbing;z-index:9;box-shadow:0 8px 20px rgba(28,43,42,.22)}
+  .dbpay{position:absolute;top:0;right:1px;font-size:.72rem;line-height:1.3;text-decoration:none;opacity:.6;z-index:3;padding:0 2px;cursor:pointer}
+  .dbpay:hover{opacity:1;text-decoration:none}
   .dbtime{font-weight:700}
   .dbsvc{color:var(--muted)}
 </style>`
@@ -313,7 +315,7 @@ async function renderDayRoster(c) {
     const blocks = (bkByStaff[st.id] || []).map(b => {
       const s = minsOfDay(b.start_time, tz), e = minsOfDay(b.end_time, tz)
       return `<div class="dblock ${b.status}" data-id="${b.id}"${b.requested_staff ? ' data-locked="1"' : ''} data-edit="/dashboard/bookings/${b.id}/edit" data-move="/dashboard/bookings/${b.id}/move" style="top:${s - gridStart}px;height:${Math.max(20, e - s)}px" title="${b.requested_staff ? 'Requested therapist (locked) · ' : ''}Drag to move · click to edit">
-        <div class="dbtime">${timeOnly(b.start_time, tz)}${b.requested_staff ? ' ❤️' : ''}${b.group_id ? ' 👥' : ''}</div><div class="dbname">${esc(b.customer_name)}</div><div class="dbsvc">${esc(b.service_name || '')}</div></div>`
+        <a class="dbpay" href="/dashboard/bookings/${b.id}/pay" title="Take payment">💳</a><div class="dbtime">${timeOnly(b.start_time, tz)}${b.requested_staff ? ' ❤️' : ''}${b.group_id ? ' 👥' : ''}</div><div class="dbname">${esc(b.customer_name)}</div><div class="dbsvc">${esc(b.service_name || '')}</div></div>`
     }).join('')
     const hrs = (a && !off) ? `<span class="whrs">${a.start_time}–${a.end_time}</span>` : `<span class="whrs">${off ? 'off' : 'closed'}</span>`
     return {
@@ -349,7 +351,7 @@ async function renderDayRoster(c) {
       const fmt=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
       let d=null;
       document.querySelectorAll('.dblock').forEach(el=>{
-        el.addEventListener('pointerdown',e=>{ if(e.button>0)return; e.preventDefault();
+        el.addEventListener('pointerdown',e=>{ if(e.button>0)return; if(e.target.closest('.dbpay'))return; e.preventDefault();
           const r=el.getBoundingClientRect();
           d={el,moved:false,sx:e.clientX,sy:e.clientY,offX:e.clientX-r.left,offY:e.clientY-r.top,w:r.width,origin:el.parentElement,tCol:el.parentElement};
           try{el.setPointerCapture(e.pointerId);}catch(_){} });
@@ -437,6 +439,7 @@ app.get('/bookings', async (c) => {
         <td>${b.deposit_cents ? money(b.deposit_cents, shop.currency) : '—'}${b.refunded_at ? '<div class="muted" style="font-size:.75rem">refunded</div>' : ''}</td>
         <td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td>
         <td><div class="inline">
+          ${['confirmed', 'pending_payment', 'completed'].includes(b.status) ? `<a class="btn gold sm" href="/dashboard/bookings/${b.id}/pay">💳 Pay</a>` : ''}
           ${['confirmed', 'pending_payment'].includes(b.status) ? `
             <a class="btn ghost sm" href="/dashboard/bookings/${b.id}/edit">Edit</a>
             <form method="post" action="/dashboard/bookings/${b.id}/complete"><button class="btn sm">✓ Done</button></form>
