@@ -550,9 +550,11 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
     <script>
     // Picking a service auto-fills the end time (start + duration) and price,
     // but both stay fully editable — that's the point of custom bookings.
-    const svc=document.getElementById('svc'),st=document.getElementById('st'),et=document.getElementById('et'),pr=document.getElementById('pr');
+    const svc=document.getElementById('svc'),st=document.getElementById('st'),et=document.getElementById('et'),pr=document.getElementById('pr'),clbl=document.querySelector('[name=custom_name]');
     function fillEnd(){const o=svc.selectedOptions[0],d=o&&o.dataset.dur?+o.dataset.dur:0;if(!d||!st.value)return;const p=st.value.split(':').map(Number);let t=Math.min(p[0]*60+p[1]+d,23*60+55);et.value=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');}
-    svc.addEventListener('change',()=>{fillEnd();const o=svc.selectedOptions[0];if(o&&o.dataset.price&&!pr.value)pr.value=(+o.dataset.price/100).toFixed(0);});
+    // Switching to a real service adopts ITS name, price and duration — clear any
+    // stale custom label and set the price so edits update correctly (create+edit).
+    svc.addEventListener('change',()=>{fillEnd();const o=svc.selectedOptions[0];if(o&&o.value){if(o.dataset.price)pr.value=(+o.dataset.price/100).toFixed(0);if(clbl)clbl.value='';}});
     st.addEventListener('change',fillEnd);
     // Searchable client picker — filter saved clients by name / phone / email.
     var CLIENTS=${JSON.stringify(clients.map(cl => ({ id: cl.id, name: cl.name, email: cl.email || '', phone: cl.phone || '', notes: cl.notes || '', rewards: cl.rewards || [] })))};
@@ -710,11 +712,18 @@ app.get('/bookings/:id/edit', async (c) => {
   const staff = (await db.prepare('SELECT id,name,emoji FROM staff WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
   const services = (await db.prepare('SELECT id,name,duration_minutes,price_cents FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
   const clients = await clientsForShop(db, shop.id)
+  // The "custom label" is only a genuine override when it differs from the
+  // linked service's own name — otherwise leave it blank so switching the
+  // service dropdown adopts the new service's name (not the old one).
+  const svcRow = services.find(s => s.id === b.service_id)
   const v = {
     date: dateTzString(new Date(b.start_time * 1000), shop.timezone),
     start: hm(b.start_time, shop.timezone), end: hm(b.end_time, shop.timezone),
-    staff_id: b.staff_id, service_id: b.service_id, custom_name: b.service_name,
-    price: b.price_cents ? b.price_cents / 100 : 0, client_id: b.client_id || '', requested_staff: b.requested_staff,
+    staff_id: b.staff_id, service_id: b.service_id, custom_name: (svcRow && b.service_name === svcRow.name) ? '' : b.service_name,
+    // Blank when it just matches the service price → a blank field means "use the
+    // selected service's price", so switching services updates price server-side too.
+    price: (svcRow && b.price_cents === svcRow.price_cents) ? '' : (b.price_cents ? b.price_cents / 100 : ''),
+    client_id: b.client_id || '', requested_staff: b.requested_staff,
     customer_name: b.customer_name, customer_email: b.customer_email, customer_phone: b.customer_phone, notes: b.notes,
   }
 
