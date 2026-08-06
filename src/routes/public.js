@@ -240,22 +240,35 @@ app.get('/:slug/book', async (c) => {
         <input type="hidden" name="service" value="${service.id}">
         <input type="hidden" name="start" id="start">
 
+        <style>
+          .segwrap{display:flex;gap:10px;margin:.3em 0 .2em}
+          .seg{flex:1;padding:15px 12px;border:1.5px solid var(--line);border-radius:14px;background:#fff;color:var(--ink);font-weight:600;font-size:.98rem;cursor:pointer;transition:.12s;line-height:1.2}
+          .seg small{display:block;font-weight:400;font-size:.76rem;color:var(--muted);margin-top:2px}
+          .seg.on{border-color:var(--accent);background:#eef4f3;color:var(--accent-ink);box-shadow:0 0 0 3px rgba(15,118,110,.10)}
+          .seg.on small{color:var(--accent-ink)}
+        </style>
+        <h3 style="margin:1.2em 0 .4em;font-size:1.05rem">${t(lang, 'bk_type')}</h3>
+        <div class="segwrap">
+          <button type="button" class="seg on" id="segSingle" data-type="single">🧍 ${t(lang, 'just_me')}</button>
+          <button type="button" class="seg" id="segGroup" data-type="group">👥 ${t(lang, 'group_couple')}</button>
+        </div>
+
         <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">${t(lang, 'step1')}</h3>
         <select name="staff" id="staff">
           <option value="any">${t(lang, 'anyone')}</option>
           ${staff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}
         </select>
 
-        <div style="margin:1.3em 0 .2em"><strong style="font-size:1.02rem">👥 ${t(lang, 'group_q')}</strong>
-          <p class="muted" style="font-size:.83rem;margin:.2em 0 0">${t(lang, 'same_time_note')}</p>
+        <div id="groupwrap" style="display:none">
+          <p class="muted" style="font-size:.83rem;margin:1.1em 0 .2em">${t(lang, 'same_time_note')}</p>
+          ${[2, 3, 4].map(n => `<div class="guestx" data-n="${n}" style="display:none;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0">
+            <div class="inline" style="justify-content:space-between;align-items:center;margin-bottom:8px"><strong>${t(lang, 'guest')} ${n}</strong><button type="button" class="btn ghost sm rmperson">${t(lang, 'remove_word')}</button></div>
+            <div class="field"><label>${t(lang, 'full_name')}</label><input name="guest_name_${n}"></div>
+            <div class="field"><label>${t(lang, 'services')}</label><select name="guest_service_${n}" class="gsvc"><option value="">—</option>${allServices.map(s => `<option value="${s.id}">${esc(s.name)} · ${s.duration_minutes} ${t(lang, 'min')}</option>`).join('')}</select></div>
+            <div class="field" style="margin-bottom:0"><label>${t(lang, 'c_therapist')}</label><select name="guest_staff_${n}" class="gstf"><option value="any">✨ ${t(lang, 'anyone')}</option>${groupStaff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
+          </div>`).join('')}
+          <button type="button" class="btn ghost sm" id="addperson" style="margin-bottom:6px">➕ ${t(lang, 'add_person')}</button>
         </div>
-        ${[2, 3, 4].map(n => `<div class="guestx" data-n="${n}" style="display:none;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0">
-          <div class="inline" style="justify-content:space-between;align-items:center;margin-bottom:8px"><strong>${t(lang, 'guest')} ${n}</strong><button type="button" class="btn ghost sm rmperson">${t(lang, 'remove_word')}</button></div>
-          <div class="field"><label>${t(lang, 'full_name')}</label><input name="guest_name_${n}"></div>
-          <div class="field"><label>${t(lang, 'services')}</label><select name="guest_service_${n}" class="gsvc"><option value="">—</option>${allServices.map(s => `<option value="${s.id}">${esc(s.name)} · ${s.duration_minutes} ${t(lang, 'min')}</option>`).join('')}</select></div>
-          <div class="field" style="margin-bottom:0"><label>${t(lang, 'c_therapist')}</label><select name="guest_staff_${n}" class="gstf"><option value="any">✨ ${t(lang, 'anyone')}</option>${groupStaff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
-        </div>`).join('')}
-        <button type="button" class="btn ghost sm" id="addperson" style="margin-bottom:6px">➕ ${t(lang, 'add_person')}</button>
 
         <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">${t(lang, 'step2')}</h3>
         <div id="dates" class="row" style="gap:8px"><span class="muted">${t(lang, 'loading')}</span></div>
@@ -331,6 +344,17 @@ app.get('/:slug/book', async (c) => {
   document.querySelectorAll('.rmperson').forEach(function(b){b.addEventListener('click',function(){var g=b.closest('.guestx');g.style.display='none';
     g.querySelectorAll('input').forEach(function(i){i.value='';});g.querySelectorAll('select').forEach(function(s){s.selectedIndex=0;});syncGuests();reloadTimes();});});
   document.querySelectorAll('.gsvc,.gstf').forEach(function(s){s.addEventListener('change',reloadTimes);});
+  // Single vs Group — the first choice. Group reveals the guest section; single
+  // hides & clears it so solo bookings stay short (therapist → date → time → you).
+  var groupWrap=document.getElementById('groupwrap'),segSingle=document.getElementById('segSingle'),segGroup=document.getElementById('segGroup');
+  function setType(type){var group=type==='group';
+    segGroup.classList.toggle('on',group);segSingle.classList.toggle('on',!group);
+    groupWrap.style.display=group?'':'none';
+    if(group){if(!shownGuests().length){var h=guestBlocks.filter(function(g){return g.style.display==='none';});if(h.length)h[0].style.display='';}}
+    else{guestBlocks.forEach(function(g){g.style.display='none';g.querySelectorAll('input').forEach(function(i){i.value='';});g.querySelectorAll('select').forEach(function(s){s.selectedIndex=0;});});}
+    syncGuests();reloadTimes();}
+  segSingle.addEventListener('click',function(){setType('single');});
+  segGroup.addEventListener('click',function(){setType('group');});
   syncGuests();
   </script>
   `, { accent: shop.accent, lang }))
