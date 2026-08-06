@@ -6,7 +6,7 @@ import { stripeClient } from '../lib/stripe.js'
 import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTherapistInvite, sendReviewRequest } from '../lib/email.js'
 import { findOrCreateClient } from '../lib/clients.js'
 import { loyaltyStatus, tierDiscount, tierLabel, getTiers, loyaltyAvailByClient } from '../lib/loyalty.js'
-import { freeTherapist } from '../lib/booking.js'
+import { freeTherapist, therapistFreeAt } from '../lib/booking.js'
 
 const app = new Hono()
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -343,7 +343,7 @@ async function renderDayRoster(c) {
           const col=el.dataset.locked?el.parentElement:(colUnder(e.clientX)||el.parentElement);
           const mins=GRID_START+Math.round((d.curTop!=null?d.curTop:d.startTop)/INTERVAL)*INTERVAL;
           const staff=col.dataset.staff, url=el.dataset.move; d=null;
-          try{ await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({date:DATE,staff_id:staff,start:fmt(mins)})}); }catch(_){}
+          try{ var resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({date:DATE,staff_id:staff,start:fmt(mins)})}); if(resp&&!resp.ok){ alert('That therapist is already booked at that time — the appointment was left where it was.'); } }catch(_){}
           location.reload(); });
       });
       bodies.forEach(body=>{ body.addEventListener('click',e=>{ if(e.target.closest('.dblock'))return; if(d)return;
@@ -371,6 +371,8 @@ app.post('/bookings/:id/move', async (c) => {
   // therapist stays locked.
   const finalStaffId = b.requested_staff ? b.staff_id : staff.id
   const finalStaffName = b.requested_staff ? b.staff_name : staff.name
+  // No double-booking: the target therapist must be free at the new time.
+  if (!(await therapistFreeAt(db, finalStaffId, startUnix, startUnix + dur, id))) return c.json({ error: 'busy' }, 409)
   await db.prepare('UPDATE bookings SET start_time=?, end_time=?, staff_id=?, staff_name=? WHERE id=?')
     .bind(startUnix, startUnix + dur, finalStaffId, finalStaffName, id).run()
   if (b.customer_email && startUnix !== b.start_time) {
@@ -552,7 +554,7 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
 }
 
 // Parse + validate the shared booking form. Returns { error } or the resolved fields.
-async function resolveBookingInput(c, shop) {
+async function resolveBookingInput(c, shop, excludeId = null) {
   const db = c.env.DB, f = await c.req.parseBody()
   const date = (f.date || '').toString(), startT = (f.start || '').toString(), endT = (f.end || '').toString()
   const staffId = (f.staff_id || '').toString()
@@ -568,10 +570,15 @@ async function resolveBookingInput(c, shop) {
   if (!sv) sv = await db.prepare('SELECT id,name,price_cents,duration_minutes FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at LIMIT 1').bind(shop.id).first()
   if (!sv) return { error: true, date }
 
-  // Therapist: a specific one, or "any available" → assign a free eligible one.
-  let staff = (staffId && staffId !== 'any') ? await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first() : null
-  if (!staff) staff = await freeTherapist(db, shop, sv, startUnix, endUnix)
-  if (!staff) return { error: true, date }
+  // Therapist: a specific one (must be free) or "any available" → a free one.
+  let staff = null
+  if (staffId && staffId !== 'any') {
+    staff = await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first()
+    // No double-booking a therapist over an existing appointment.
+    if (staff && !(await therapistFreeAt(db, staff.id, startUnix, endUnix, excludeId))) return { error: true, date, busy: true }
+  }
+  if (!staff) staff = await freeTherapist(db, shop, sv, startUnix, endUnix, new Set(), excludeId)
+  if (!staff) return { error: true, date, busy: true }
 
   const priceStr = (f.price || '').toString().trim()
   const priceCents = priceStr !== '' ? Math.max(0, Math.round(parseFloat(priceStr) * 100) || 0) : (explicit ? sv.price_cents : 0)
@@ -625,6 +632,7 @@ app.get('/bookings/new', async (c) => {
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Add a booking</h2>
     <p class="muted" style="margin-top:-6px">Manually schedule an appointment at any time — pick a start and end, e.g. <strong>9:10 am</strong> to <strong>10:25 am</strong>.</p>
+    ${c.req.query('err') === 'busy' ? '<div class="notice err" style="max-width:580px">⚠️ That therapist is already booked over that time — pick another time or therapist (or use “Any available”).</div>' : ''}
     ${bookingForm(shop, staff, services, clients, '/dashboard/bookings/new', 'Add booking', v, loyOn)}
   `)
 })
@@ -632,7 +640,7 @@ app.get('/bookings/new', async (c) => {
 app.post('/bookings/new', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
   const r = await resolveBookingInput(c, shop)
-  if (r.error) return c.redirect(`/dashboard/bookings/new${r.date ? `?date=${r.date}` : ''}`)
+  if (r.error) return c.redirect(`/dashboard/bookings/new?date=${r.date || ''}${r.busy ? '&err=busy' : ''}`)
 
   // Apply a chosen loyalty reward tier if the client genuinely has it available.
   let priceCents = r.priceCents, loyaltyApplied = 0, redeemMilestone = 0
@@ -724,6 +732,7 @@ app.get('/bookings/:id/edit', async (c) => {
   return shell(c, 'bookings', 'Edit booking', `
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Edit / reschedule booking</h2>
+    ${c.req.query('err') === 'busy' ? '<div class="notice err" style="max-width:580px;margin-bottom:10px">⚠️ That therapist is already booked over that time — pick another time or therapist.</div>' : ''}
     <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span>${b.loyalty_applied > 0 ? ` · 🎁 <strong>${money(b.loyalty_applied, shop.currency)} loyalty reward applied</strong>` : ''}${b.group_id ? ` · 👥 <strong>Group booking</strong>${b.room ? ` (${esc(b.room)})` : ''}` : ''}</p>
     ${['confirmed', 'pending_payment'].includes(b.status) ? `<div class="inline" style="gap:8px;margin:0 0 14px;flex-wrap:wrap">
       <form method="post" action="/dashboard/bookings/${b.id}/complete"><button class="btn sm">✓ Mark done</button></form>
@@ -741,8 +750,8 @@ app.post('/bookings/:id/edit', async (c) => {
   const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
   const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(id, shop.id).first()
   if (!b) return c.redirect('/dashboard/bookings')
-  const r = await resolveBookingInput(c, shop)
-  if (r.error) return c.redirect(`/dashboard/bookings/${id}/edit`)
+  const r = await resolveBookingInput(c, shop, id)
+  if (r.error) return c.redirect(`/dashboard/bookings/${id}/edit${r.busy ? '?err=busy' : ''}`)
 
   await db.prepare(`UPDATE bookings SET service_id=?, staff_id=?, customer_name=?, customer_email=?, customer_phone=?,
     start_time=?, end_time=?, price_cents=?, service_name=?, staff_name=?, notes=?, client_id=?, requested_staff=? WHERE id=?`)
@@ -789,8 +798,8 @@ app.get('/bookings/group/new', async (c) => {
     <form method="post" action="/dashboard/bookings/group/new" style="max-width:640px">
       <div class="card" style="padding:18px;margin-bottom:14px">
         <div class="row">
-          <div class="field"><label>Date</label><input type="date" name="date" value="${date}" required></div>
-          <div class="field"><label>Start time</label><input type="time" name="start" step="300" value="10:00" required></div>
+          <div class="field"><label>Date</label><input type="date" name="date" id="gdate" value="${date}" required></div>
+          <div class="field"><label>Start time <span class="muted">(available only)</span></label><select name="start" id="gstart" required><option value="">Pick a date…</option></select></div>
           <div class="field"><label>Room <span class="muted">(optional)</span></label><input name="room" list="roomlist" placeholder="e.g. Couple Room 1"><datalist id="roomlist">${rooms.map(r => `<option value="${esc(r)}">`).join('')}</datalist></div>
         </div>
       </div>
@@ -802,15 +811,24 @@ app.get('/bookings/group/new', async (c) => {
     var rows=[].slice.call(document.querySelectorAll('.guestrow'));
     document.getElementById('addguest').addEventListener('click',function(){for(var i=0;i<rows.length;i++){if(rows[i].style.display==='none'){rows[i].style.display='';break;}}});
     document.querySelectorAll('.rmguest').forEach(function(b){b.addEventListener('click',function(){var row=b.closest('.guestrow');row.style.display='none';row.querySelectorAll('input').forEach(function(el){el.value='';});row.querySelectorAll('select').forEach(function(el){el.selectedIndex=0;});updTimes();});});
+    // Load only available start times for the chosen date.
+    var dateEl=document.getElementById('gdate'), startEl=document.getElementById('gstart');
+    async function loadSlots(){ if(!dateEl.value){return;} startEl.innerHTML='<option value="">Loading…</option>';
+      try{ var r=await fetch('/dashboard/group-slots?date='+encodeURIComponent(dateEl.value)); var j=await r.json();
+        if(!j.slots||!j.slots.length){ startEl.innerHTML='<option value="">No times available that day</option>'; updTimes(); return; }
+        startEl.innerHTML='<option value="">— select a time —</option>'+j.slots.map(function(s){return '<option value="'+s.hm+'">'+s.display+' · '+s.free+' free</option>';}).join('');
+      }catch(e){ startEl.innerHTML='<option value="">Could not load times</option>'; }
+      updTimes();
+    }
+    dateEl.addEventListener('change',loadSlots);
     // Show each guest's time (shared start + their service duration).
-    var startEl=document.querySelector('input[name=start]');
     function fmt(m){return (''+Math.floor(m/60)).padStart(2,'0')+':'+(''+(m%60)).padStart(2,'0');}
     function updTimes(){var v=startEl&&startEl.value?startEl.value.split(':').map(Number):null;if(!v)return;var sm=v[0]*60+v[1];
       rows.forEach(function(row){var sel=row.querySelector('.gsvc'),o=sel&&sel.selectedOptions[0],d=o&&o.dataset.dur?+o.dataset.dur:0,g=row.querySelector('.gtime');
         if(g)g.textContent=d?('🕐 '+fmt(sm)+'–'+fmt(Math.min(sm+d,1439))+' · '+d+' min'):'';});}
-    if(startEl)startEl.addEventListener('change',updTimes);
+    startEl.addEventListener('change',updTimes);
     document.querySelectorAll('.gsvc').forEach(function(s){s.addEventListener('change',updTimes);});
-    updTimes();
+    loadSlots();
     </script>
   `)
 })
@@ -835,8 +853,12 @@ app.post('/bookings/group/new', async (c) => {
     // Therapist: a specific one, or "any available" → assign a free eligible one
     // that isn't already used elsewhere in this group.
     const staffId = (f[`guest_staff_${i}`] || '').toString()
-    let stf = (staffId && staffId !== 'any') ? await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first() : null
-    if (!stf) stf = await freeTherapist(db, shop, svc, startUnix, endUnix, usedIds)
+    let stf = null
+    if (staffId && staffId !== 'any') {
+      const cand = await db.prepare('SELECT id,name FROM staff WHERE id=? AND shop_id=?').bind(staffId, shop.id).first()
+      if (cand && !usedIds.has(cand.id) && await therapistFreeAt(db, cand.id, startUnix, endUnix)) stf = cand
+    }
+    if (!stf) stf = await freeTherapist(db, shop, svc, startUnix, endUnix, usedIds)  // any free, no overlaps
     if (!stf) continue
     usedIds.add(stf.id)
     const name = (f[`guest_name_${i}`] || '').toString().trim() || 'Walk-in'
@@ -851,6 +873,46 @@ app.post('/bookings/group/new', async (c) => {
   }
   if (!made) return c.redirect(back)
   return c.redirect(`/dashboard/roster?view=day&date=${date}`)
+})
+
+// Available group start times for a date: times (at the slot interval, within
+// working hours) where at least one therapist is free. Returns the free count too.
+app.get('/group-slots', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), tz = shop.timezone
+  const date = c.req.query('date') || ''
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ slots: [] })
+  const interval = Math.max(5, Number(shop.slot_interval_minutes) || 15)
+  const dow = new Date(date + 'T12:00:00Z').getUTCDay()
+  const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m }
+  const pad = n => String(n).padStart(2, '0')
+  const hm = m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`
+  const disp = m => { const h = Math.floor(m / 60); return `${(h % 12) || 12}:${pad(m % 60)} ${h < 12 ? 'AM' : 'PM'}` }
+
+  const avails = (await db.prepare('SELECT a.staff_id,a.start_time,a.end_time FROM availability a JOIN staff s ON s.id=a.staff_id WHERE s.shop_id=? AND s.is_active=1 AND a.day_of_week=?').bind(shop.id, dow).all()).results || []
+  const offIds = new Set(((await db.prepare('SELECT t.staff_id FROM time_off t JOIN staff s ON s.id=t.staff_id WHERE s.shop_id=? AND t.date=?').bind(shop.id, date).all()).results || []).map(o => o.staff_id))
+  const windows = avails.filter(a => !offIds.has(a.staff_id)).map(a => ({ staff: a.staff_id, s: toMin(a.start_time), e: toMin(a.end_time) }))
+  if (!windows.length) return c.json({ slots: [] })
+  const dayStart = Math.min(...windows.map(w => w.s)), dayEnd = Math.max(...windows.map(w => w.e))
+
+  const dayStartU = Math.floor(localToUtcMs(date, '00:00', tz) / 1000)
+  const booked = (await db.prepare("SELECT staff_id,start_time,end_time FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? AND status IN ('pending_payment','confirmed','completed')").bind(shop.id, dayStartU, dayStartU + 86400).all()).results || []
+  const bookedByStaff = {}; for (const b of booked) (bookedByStaff[b.staff_id] ||= []).push(b)
+
+  const now = Math.floor(Date.now() / 1000) + 30 * 60   // 30-min lead
+  const slots = []
+  for (let m = dayStart; m + interval <= dayEnd; m += interval) {
+    const startU = Math.floor(localToUtcMs(date, hm(m), tz) / 1000)
+    if (startU < now) continue
+    const endU = startU + interval * 60
+    let free = 0
+    for (const w of windows) {
+      if (m < w.s || m >= w.e) continue
+      const conflict = (bookedByStaff[w.staff] || []).some(b => b.start_time < endU && b.end_time > startU)
+      if (!conflict) free++
+    }
+    if (free >= 1) slots.push({ hm: hm(m), display: disp(m), free })
+  }
+  return c.json({ slots })
 })
 
 // ─── Services ────────────────────────────────────────────────────────────────

@@ -18,29 +18,32 @@ export async function eligibleStaff(db, shopId, serviceId) {
   return all.results || []
 }
 
-// Pick a therapist for "any available": prefers one eligible for the service who
-// works that day, isn't on time-off, and has no overlapping booking. Falls back
-// to any eligible not-excluded therapist (owner override / over-book). Works for
-// custom times too (not slot-aligned). Returns {id,name} or null.
-export async function freeTherapist(db, shop, service, startUnix, endUnix, excludeIds = new Set()) {
+// Is a therapist free for [startUnix, endUnix)? (no overlapping active booking).
+// Pass excludeBookingId to ignore the booking being edited/moved.
+export async function therapistFreeAt(db, staffId, startUnix, endUnix, excludeBookingId = null) {
+  const row = await db.prepare(
+    "SELECT 1 FROM bookings WHERE staff_id=? AND status IN ('pending_payment','confirmed','completed') AND start_time < ? AND end_time > ? AND id <> ? LIMIT 1"
+  ).bind(staffId, endUnix, startUnix, excludeBookingId || '').first()
+  return !row
+}
+
+// Pick a therapist for "any available": eligible for the service, works that day,
+// not on time-off, and with NO overlapping booking. Never over-books — returns
+// null if nobody is genuinely free. Works for custom (non-slot) times too.
+export async function freeTherapist(db, shop, service, startUnix, endUnix, excludeIds = new Set(), excludeBookingId = null) {
   const eligible = await eligibleStaff(db, shop.id, service.id)
   const dateStr = dateTzString(new Date(startUnix * 1000), shop.timezone)
   const dow = getDayOfWeek(dateStr, shop.timezone)
-  let fallback = null
   for (const st of eligible) {
     if (excludeIds.has(st.id)) continue
-    if (!fallback) fallback = st
     const avail = await db.prepare('SELECT 1 FROM availability WHERE staff_id=? AND day_of_week=?').bind(st.id, dow).first()
     if (!avail) continue
     const off = await db.prepare('SELECT 1 FROM time_off WHERE staff_id=? AND date=?').bind(st.id, dateStr).first()
     if (off) continue
-    const conflict = await db.prepare(
-      "SELECT 1 FROM bookings WHERE staff_id=? AND status IN ('pending_payment','confirmed','completed') AND start_time < ? AND end_time > ?"
-    ).bind(st.id, endUnix, startUnix).first()
-    if (conflict) continue
-    return { id: st.id, name: st.name }   // fully free
+    if (!(await therapistFreeAt(db, st.id, startUnix, endUnix, excludeBookingId))) continue
+    return { id: st.id, name: st.name }
   }
-  return fallback ? { id: fallback.id, name: fallback.name } : null
+  return null
 }
 
 // Free time-slots for a date. Returns [{ time, unix, display, staffIds:[...] }]
