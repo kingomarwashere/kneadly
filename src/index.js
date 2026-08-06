@@ -3,6 +3,7 @@ import { getCookie } from 'hono/cookie'
 import { getSession } from './lib/auth.js'
 import { resolveLang } from './lib/i18n.js'
 import { runReminders } from './lib/email.js'
+import { ICONS, pngResponse } from './lib/icons.js'
 import authRoutes from './routes/auth.js'
 import dashboardRoutes from './routes/dashboard.js'
 import apiRoutes from './routes/api.js'
@@ -66,6 +67,32 @@ app.get('/og.svg', (c) => {
 </svg>`
   return c.body(svg, 200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=3600' })
 })
+
+// ─── PWA (installable, but caches NOTHING) ───────────────────────────────────
+app.get('/icon-512.png', (c) => pngResponse(ICONS[512]))
+app.get('/icon-192.png', (c) => pngResponse(ICONS[192]))
+app.get('/apple-touch-icon.png', (c) => pngResponse(ICONS[180]))
+app.get('/apple-touch-icon-precomposed.png', (c) => pngResponse(ICONS[180]))
+
+app.get('/manifest.webmanifest', (c) => c.body(JSON.stringify({
+  name: 'Alisa', short_name: 'Alisa',
+  description: 'Booking manager for your massage shop.',
+  start_url: '/dashboard', scope: '/', display: 'standalone',
+  background_color: '#0a5249', theme_color: '#0f766e', orientation: 'any',
+  icons: [
+    { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+    { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+    { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+  ],
+}), 200, { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-store' }))
+
+// Network-only service worker — required for installability, but deliberately
+// caches nothing so users always get the freshest version.
+app.get('/sw.js', (c) => c.body(
+  `self.addEventListener('install',e=>self.skipWaiting());
+self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));
+self.addEventListener('fetch',e=>{e.respondWith(fetch(e.request));});`,
+  200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' }))
 
 app.get('/robots.txt', (c) => {
   const base = c.env.BASE_URL || 'https://alisa.bored.investments'

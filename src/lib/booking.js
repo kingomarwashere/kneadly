@@ -174,3 +174,105 @@ export async function availableDates(db, shop, service, staffId, daysAhead = 45)
   }
   return out
 }
+
+// ── Group / party availability ───────────────────────────────────────────────
+// Everything needed to test SIMULTANEOUS availability on a date, loaded once.
+export async function dayContext(db, shop, dateStr) {
+  const tz = shop.timezone
+  const dow = getDayOfWeek(dateStr, tz)
+  const staff = (await db.prepare('SELECT id,name,emoji FROM staff WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  const staffById = {}; for (const s of staff) staffById[s.id] = s
+  const dayStartU = Math.floor(localToUtcMs(dateStr, '00:00', tz) / 1000)
+  const sh = shopHoursFor(shop, dow) // undefined = no constraint · null = closed · {open,close}
+  const availByStaff = {}
+  if (sh !== null) {
+    const clampS = sh ? toMin(sh.open) : null, clampE = sh ? toMin(sh.close) : null
+    for (const a of ((await db.prepare('SELECT a.staff_id,a.start_time,a.end_time FROM availability a JOIN staff s ON s.id=a.staff_id WHERE s.shop_id=? AND s.is_active=1 AND a.day_of_week=?').bind(shop.id, dow).all()).results || [])) {
+      let s = toMin(a.start_time), e = toMin(a.end_time)
+      if (clampS != null) { s = Math.max(s, clampS); e = Math.min(e, clampE) }
+      if (e <= s) continue
+      availByStaff[a.staff_id] = { sU: dayStartU + s * 60, eU: dayStartU + e * 60, sMin: s, eMin: e }
+    }
+  }
+  const offIds = new Set(((await db.prepare('SELECT t.staff_id FROM time_off t JOIN staff s ON s.id=t.staff_id WHERE s.shop_id=? AND t.date=?').bind(shop.id, dateStr).all()).results || []).map(o => o.staff_id))
+  const booked = (await db.prepare("SELECT staff_id,start_time,end_time FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? AND status IN ('pending_payment','confirmed','completed')").bind(shop.id, dayStartU, dayStartU + 86400).all()).results || []
+  const bkByStaff = {}; for (const b of booked) (bkByStaff[b.staff_id] ||= []).push(b)
+  const eligByService = {} // service -> Set(staffId); a service with no links = all staff eligible
+  for (const l of ((await db.prepare('SELECT ss.service_id, ss.staff_id FROM staff_services ss JOIN staff s ON s.id=ss.staff_id WHERE s.shop_id=? AND s.is_active=1').bind(shop.id).all()).results || []))
+    (eligByService[l.service_id] ||= new Set()).add(l.staff_id)
+  return { tz, dow, staff, staffById, availByStaff, offIds, bkByStaff, eligByService, dayStartU, shopClosed: sh === null }
+}
+
+// staffIds that can perform `service` (durSec) starting at unix T under prefs.
+function freeStaffFor(ctx, serviceId, durSec, T, pref) {
+  const elig = ctx.eligByService[serviceId] // Set or undefined => all eligible
+  const endT = T + durSec
+  const out = []
+  for (const st of ctx.staff) {
+    const id = st.id
+    if (pref && pref !== 'any' && pref !== id) continue
+    if (elig && !elig.has(id)) continue
+    if (ctx.offIds.has(id)) continue
+    const w = ctx.availByStaff[id]; if (!w) continue
+    if (T < w.sU || endT > w.eU) continue
+    if ((ctx.bkByStaff[id] || []).some(b => b.start_time < endT && b.end_time > T)) continue
+    out.push(id)
+  }
+  return out
+}
+
+// Assign each person a DISTINCT therapist from their candidate set (fewest
+// options first + backtracking). Returns staffIds aligned to input, or null.
+function matchAssign(sets) {
+  const order = sets.map((s, i) => [i, s]).sort((a, b) => a[1].length - b[1].length)
+  const used = new Set(), out = new Array(sets.length).fill(null)
+  const bt = k => {
+    if (k === order.length) return true
+    const [i, set] = order[k]
+    for (const id of set) { if (used.has(id)) continue; used.add(id); out[i] = id; if (bt(k + 1)) return true; used.delete(id); out[i] = null }
+    return false
+  }
+  return bt(0) ? out : null
+}
+
+// Seat a whole party at one start time. party = [{ service:{id,duration_minutes},
+// staffPref }]. Returns staffIds aligned to party order, or null if the group
+// can't all be seated by distinct free therapists.
+export function assignPartyAt(ctx, party, startUnix) {
+  const sets = []
+  for (const p of party) {
+    const set = freeStaffFor(ctx, p.service.id, p.service.duration_minutes * 60, startUnix, p.staffPref)
+    if (!set.length) return null
+    sets.push(set)
+  }
+  return matchAssign(sets)
+}
+
+// Start times on a date where the WHOLE party fits simultaneously.
+// party = [{ serviceId, staffPref }]. Returns [{ unix, display }].
+export async function groupSlotsForDate(db, shop, party, dateStr) {
+  const ctx = await dayContext(db, shop, dateStr)
+  if (ctx.shopClosed) return []
+  const wins = Object.values(ctx.availByStaff)
+  if (!wins.length) return []
+  const svcIds = [...new Set(party.map(p => p.serviceId))]
+  const durById = {}
+  for (const s of ((await db.prepare(`SELECT id,duration_minutes FROM services WHERE shop_id=? AND is_active=1 AND id IN (${svcIds.map(() => '?').join(',')})`).bind(shop.id, ...svcIds).all()).results || []))
+    durById[s.id] = s.duration_minutes
+  const people = party.map(p => ({ service: { id: p.serviceId, duration_minutes: durById[p.serviceId] }, staffPref: p.staffPref }))
+  if (people.some(p => !p.service.duration_minutes)) return []
+  const interval = Math.max(5, Number(shop.slot_interval_minutes) || 15)
+  const gridStartMin = Math.min(...wins.map(w => w.sMin)), gridEndMin = Math.max(...wins.map(w => w.eMin))
+  const now = Math.floor(Date.now() / 1000) + 30 * 60
+  const pad = n => String(n).padStart(2, '0')
+  const out = []
+  for (let m = gridStartMin; m <= gridEndMin; m += interval) {
+    const T = Math.floor(localToUtcMs(dateStr, `${pad(Math.floor(m / 60))}:${pad(m % 60)}`, ctx.tz) / 1000)
+    if (T < now) continue
+    if (assignPartyAt(ctx, people, T)) {
+      const h = Math.floor(m / 60)
+      out.push({ unix: T, display: `${(h % 12) || 12}:${pad(m % 60)} ${h < 12 ? 'AM' : 'PM'}` })
+    }
+  }
+  return out
+}

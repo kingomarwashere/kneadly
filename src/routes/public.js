@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { layout, siteNav, money, esc } from '../lib/views.js'
 import { t, localeFor } from '../lib/i18n.js'
-import { getShopBySlug, eligibleStaff, slotsForDate } from '../lib/booking.js'
+import { getShopBySlug, eligibleStaff, slotsForDate, dayContext, assignPartyAt } from '../lib/booking.js'
 import { formatBookingTime, formatDate } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
 import { genId } from '../lib/auth.js'
@@ -246,6 +246,17 @@ app.get('/:slug/book', async (c) => {
           ${staff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}
         </select>
 
+        <div style="margin:1.3em 0 .2em"><strong style="font-size:1.02rem">👥 ${t(lang, 'group_q')}</strong>
+          <p class="muted" style="font-size:.83rem;margin:.2em 0 0">${t(lang, 'same_time_note')}</p>
+        </div>
+        ${[2, 3, 4].map(n => `<div class="guestx" data-n="${n}" style="display:none;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0">
+          <div class="inline" style="justify-content:space-between;align-items:center;margin-bottom:8px"><strong>${t(lang, 'guest')} ${n}</strong><button type="button" class="btn ghost sm rmperson">${t(lang, 'remove_word')}</button></div>
+          <div class="field"><label>${t(lang, 'full_name')}</label><input name="guest_name_${n}"></div>
+          <div class="field"><label>${t(lang, 'services')}</label><select name="guest_service_${n}" class="gsvc"><option value="">—</option>${allServices.map(s => `<option value="${s.id}">${esc(s.name)} · ${s.duration_minutes} ${t(lang, 'min')}</option>`).join('')}</select></div>
+          <div class="field" style="margin-bottom:0"><label>${t(lang, 'c_therapist')}</label><select name="guest_staff_${n}" class="gstf"><option value="any">✨ ${t(lang, 'anyone')}</option>${groupStaff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
+        </div>`).join('')}
+        <button type="button" class="btn ghost sm" id="addperson" style="margin-bottom:6px">➕ ${t(lang, 'add_person')}</button>
+
         <h3 style="margin:1.4em 0 .4em;font-size:1.05rem">${t(lang, 'step2')}</h3>
         <div id="dates" class="row" style="gap:8px"><span class="muted">${t(lang, 'loading')}</span></div>
 
@@ -257,17 +268,6 @@ app.get('/:slug/book', async (c) => {
         <div class="field"><label>${t(lang, 'email')}</label><input type="email" name="email" required></div>
         <div class="field"><label>${t(lang, 'mobile')}</label><input name="phone" placeholder="${t(lang, 'optional')}"></div>
         <div class="field"><label>${t(lang, 'notes_label')}</label><textarea name="notes" rows="2" placeholder="${t(lang, 'notes_ph')}"></textarea></div>
-
-        <div class="field" style="margin-bottom:2px"><label>👥 ${t(lang, 'group_q')}</label>
-          <p class="muted" style="font-size:.83rem;margin:.2em 0 0">${t(lang, 'same_time_note')}</p>
-        </div>
-        ${[2, 3, 4].map(n => `<div class="guestx" data-n="${n}" style="display:none;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0">
-          <div class="inline" style="justify-content:space-between;align-items:center;margin-bottom:8px"><strong>${t(lang, 'guest')} ${n}</strong><button type="button" class="btn ghost sm rmperson">${t(lang, 'remove_word')}</button></div>
-          <div class="field"><label>${t(lang, 'full_name')}</label><input name="guest_name_${n}"></div>
-          <div class="field"><label>${t(lang, 'services')}</label><select name="guest_service_${n}"><option value="">—</option>${allServices.map(s => `<option value="${s.id}">${esc(s.name)} · ${s.duration_minutes} ${t(lang, 'min')}</option>`).join('')}</select></div>
-          <div class="field" style="margin-bottom:0"><label>${t(lang, 'c_therapist')}</label><select name="guest_staff_${n}"><option value="any">✨ ${t(lang, 'anyone')}</option>${groupStaff.map(s => `<option value="${s.id}">${esc(s.emoji)} ${esc(s.name)}</option>`).join('')}</select></div>
-        </div>`).join('')}
-        <button type="button" class="btn ghost sm" id="addperson" style="margin-bottom:6px">➕ ${t(lang, 'add_person')}</button>
 
         <div id="depositcard" class="card" style="padding:14px 16px;background:#f6f2ec;border-style:dashed;margin-bottom:16px">
           ${depositCents > 0
@@ -298,10 +298,18 @@ app.get('/:slug/book', async (c) => {
     dates.slice(0,21).forEach(ds=>{const b=document.createElement('button');b.type='button';b.className='btn ghost sm';b.textContent=fmtDate(ds);
       b.onclick=()=>{selDate=ds;[...datesEl.children].forEach(x=>x.classList.add('ghost'));b.classList.remove('ghost');loadTimes(ds)};datesEl.appendChild(b)});
   }
+  // Build the whole party (person 1 + any added guests) for group-aware times.
+  function party(){
+    var p=[{serviceId:service,staffPref:staffEl.value}];
+    shownGuests().forEach(function(g){var sv=g.querySelector('.gsvc'),st=g.querySelector('.gstf');
+      if(sv&&sv.value)p.push({serviceId:sv.value,staffPref:st?st.value:'any'});});
+    return p;
+  }
   async function loadTimes(ds){
     startEl.value='';submitEl.disabled=true;submitEl.textContent=T.pick_time_btn;
     timesEl.innerHTML='<span class="muted">'+T.loading+'</span>';
-    const r=await fetch('/api/slots?shop='+slug+'&service='+service+'&staff='+staffEl.value+'&date='+ds);
+    var url='/api/group-slots?shop='+slug+'&date='+ds+'&party='+encodeURIComponent(JSON.stringify(party()));
+    const r=await fetch(url);
     const {slots}=await r.json();
     if(!slots||!slots.length){timesEl.innerHTML='<span class="muted">'+T.fully_booked+'</span>';return;}
     timesEl.innerHTML='';
@@ -309,17 +317,20 @@ app.get('/:slug/book', async (c) => {
       b.onclick=()=>{startEl.value=s.unix;[...timesEl.children].forEach(x=>x.classList.add('ghost'));b.classList.remove('ghost');
         submitEl.disabled=false;submitEl.textContent=T.confirm};timesEl.appendChild(b)});
   }
+  function reloadTimes(){startEl.value='';submitEl.disabled=true;submitEl.textContent=T.pick_time_btn;if(selDate)loadTimes(selDate);}
   staffEl.onchange=loadDates;loadDates();
   // Couple / group guests: reveal one block at a time with "add another person".
+  // Changing the party re-checks which times can fit EVERYONE at once.
   var addBtn=document.getElementById('addperson'),depc=document.getElementById('depositcard');
   var guestBlocks=[].slice.call(document.querySelectorAll('.guestx'));
   function shownGuests(){return guestBlocks.filter(function(g){return g.style.display!=='none';});}
   function syncGuests(){var hidden=guestBlocks.filter(function(g){return g.style.display==='none';});
     if(addBtn)addBtn.style.display=hidden.length?'':'none';
     if(depc)depc.style.display=shownGuests().length?'none':'';}
-  if(addBtn)addBtn.addEventListener('click',function(){var hidden=guestBlocks.filter(function(g){return g.style.display==='none';});if(hidden.length)hidden[0].style.display='';syncGuests();});
+  if(addBtn)addBtn.addEventListener('click',function(){var hidden=guestBlocks.filter(function(g){return g.style.display==='none';});if(hidden.length)hidden[0].style.display='';syncGuests();reloadTimes();});
   document.querySelectorAll('.rmperson').forEach(function(b){b.addEventListener('click',function(){var g=b.closest('.guestx');g.style.display='none';
-    g.querySelectorAll('input').forEach(function(i){i.value='';});g.querySelectorAll('select').forEach(function(s){s.selectedIndex=0;});syncGuests();});});
+    g.querySelectorAll('input').forEach(function(i){i.value='';});g.querySelectorAll('select').forEach(function(s){s.selectedIndex=0;});syncGuests();reloadTimes();});});
+  document.querySelectorAll('.gsvc,.gstf').forEach(function(s){s.addEventListener('change',reloadTimes);});
   syncGuests();
   </script>
   `, { accent: shop.accent, lang }))
@@ -340,47 +351,39 @@ app.post('/:slug/book', async (c) => {
   const email = (form.email || '').toString().trim().toLowerCase()
   if (!startUnix || !name || !email) return c.text('Missing details', 400)
 
-  // Re-derive the date in the shop TZ and re-check the slot is genuinely free
+  // Re-derive the date in the shop TZ.
   const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: shop.timezone }).format(new Date(startUnix * 1000))
-  const slots = await slotsForDate(db, shop, service, form.staff?.toString() || 'any', dateStr)
-  const slot = slots.find(s => s.unix === startUnix)
-  if (!slot) return c.text('Sorry, that time was just taken. Please go back and pick another.', 409)
 
-  // Assign a concrete therapist (first free one for "anyone available")
-  const staffId = (form.staff && form.staff !== 'any' && slot.staffIds.includes(form.staff.toString()))
-    ? form.staff.toString() : slot.staffIds[0]
-  const staffRow = await db.prepare('SELECT name FROM staff WHERE id = ?').bind(staffId).first()
-
-  // Save/refresh the primary person as a client.
-  const clientId = await findOrCreateClient(db, shop.id, { name, email, phone: (form.phone || '').toString() })
-  // If the customer picked a specific therapist, treat it as a request.
-  const requestedStaff = (form.staff && form.staff.toString() !== 'any') ? 1 : 0
-
-  // Couple / group booking: resolve each extra guest to a free therapist at the
-  // same start time. Build the full list of bookings to create (primary first).
-  const guestSpecs = [2, 3, 4].map(n => ({ sid: (form[`guest_service_${n}`] || '').toString(), name: (form[`guest_name_${n}`] || '').toString().trim() || `Guest ${n}`, staff: (form[`guest_staff_${n}`] || '').toString() })).filter(g => g.sid)
+  // Build the party: primary first, then any group guests with a chosen service.
+  const primaryPref = (form.staff || 'any').toString()
+  const guestSpecs = [2, 3, 4].map(n => ({ sid: (form[`guest_service_${n}`] || '').toString(), name: (form[`guest_name_${n}`] || '').toString().trim() || `Guest ${n}`, staff: (form[`guest_staff_${n}`] || 'any').toString() })).filter(g => g.sid)
   const isGroup = guestSpecs.length > 0
   const groupId = isGroup ? genId() : null
 
-  const items = [{ service, staffId, staffName: staffRow?.name || '', name, email, phone: (form.phone || '').toString(), notes: (form.notes || '').toString(), clientId, requested: requestedStaff }]
-  if (isGroup) {
-    const usedIds = new Set([staffId])
-    for (const g of guestSpecs) {
-      const gsvc = await db.prepare('SELECT * FROM services WHERE id=? AND shop_id=? AND is_active=1').bind(g.sid, shop.id).first()
-      if (!gsvc) continue
-      const gslot = (await slotsForDate(db, shop, gsvc, 'any', dateStr)).find(s => s.unix === startUnix)
-      if (!gslot) continue
-      // Honour the guest's chosen therapist if they're genuinely free & unused;
-      // otherwise assign any free one. A specific pick is a "request" (locked).
-      let gStaff = null, gReq = 0
-      if (g.staff && g.staff !== 'any' && gslot.staffIds.includes(g.staff) && !usedIds.has(g.staff)) { gStaff = g.staff; gReq = 1 }
-      if (!gStaff) gStaff = gslot.staffIds.find(id => !usedIds.has(id))
-      if (!gStaff) continue
-      usedIds.add(gStaff)
-      const gRow = await db.prepare('SELECT name FROM staff WHERE id=?').bind(gStaff).first()
-      const gClient = await findOrCreateClient(db, shop.id, { name: g.name })
-      items.push({ service: gsvc, staffId: gStaff, staffName: gRow?.name || '', name: g.name, email: '', phone: '', notes: '', clientId: gClient, requested: gReq })
-    }
+  const partyPeople = [{ service, staffPref: primaryPref === 'any' ? 'any' : primaryPref }]
+  for (const g of guestSpecs) {
+    const gsvc = await db.prepare('SELECT * FROM services WHERE id=? AND shop_id=? AND is_active=1').bind(g.sid, shop.id).first()
+    if (!gsvc) return c.text('One of the selected services is unavailable. Please go back.', 400)
+    g.svc = gsvc
+    partyPeople.push({ service: gsvc, staffPref: (g.staff && g.staff !== 'any') ? g.staff : 'any' })
+  }
+
+  // Seat the WHOLE party at the chosen time with DISTINCT free therapists —
+  // the same matching the time picker used, so what was offered is bookable.
+  const ctx = await dayContext(db, shop, dateStr)
+  const assigned = assignPartyAt(ctx, partyPeople, startUnix)
+  if (!assigned) return c.text('Sorry, that time was just taken (or your group no longer fits). Please go back and pick another.', 409)
+  const primaryStaffName = ctx.staffById[assigned[0]]?.name || ''
+
+  // Save/refresh the primary person as a client.
+  const clientId = await findOrCreateClient(db, shop.id, { name, email, phone: (form.phone || '').toString() })
+
+  // Build the booking list (primary first). A specific therapist = a "request".
+  const items = [{ service, staffId: assigned[0], staffName: primaryStaffName, name, email, phone: (form.phone || '').toString(), notes: (form.notes || '').toString(), clientId, requested: primaryPref !== 'any' ? 1 : 0 }]
+  for (let i = 0; i < guestSpecs.length; i++) {
+    const g = guestSpecs[i], stId = assigned[i + 1]
+    const gClient = await findOrCreateClient(db, shop.id, { name: g.name })
+    items.push({ service: g.svc, staffId: stId, staffName: ctx.staffById[stId]?.name || '', name: g.name, email: '', phone: '', notes: '', clientId: gClient, requested: (g.staff && g.staff !== 'any') ? 1 : 0 })
   }
 
   // Deposit is charged ONCE for the whole booking/group (sum of each person's).
@@ -417,7 +420,7 @@ app.post('/:slug/book', async (c) => {
           price_data: {
             currency: shop.currency,
             unit_amount: totalDeposit,
-            product_data: { name: label, description: `${formatBookingTime(startUnix, shop.timezone)}${items.length > 1 ? ` · ${items.length} people` : ` with ${staffRow?.name || 'our team'}`}` }
+            product_data: { name: label, description: `${formatBookingTime(startUnix, shop.timezone)}${items.length > 1 ? ` · ${items.length} people` : ` with ${primaryStaffName || 'our team'}`}` }
           }
         }],
         metadata: { booking_id: bookingId, group_id: groupId || '' },

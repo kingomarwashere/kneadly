@@ -55,8 +55,8 @@ function shell(c, active, title, body, notice) {
     lang: c.get('lang'),
     css: `
     .dwrap{display:flex;min-height:100vh;max-width:1200px;margin:0 auto}
-    .dside{width:220px;flex:0 0 220px;padding:18px 12px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:2px;position:sticky;top:0;height:100vh}
-    .dtab{padding:10px 12px;border-radius:10px;color:var(--ink);font-weight:500;font-size:.92rem}
+    .dside{width:220px;flex:0 0 220px;padding:18px 12px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:2px;position:sticky;top:0;height:100vh;overflow-y:auto}
+    .dtab{padding:11px 12px;border-radius:10px;color:var(--ink);font-weight:500;font-size:.92rem;white-space:nowrap}
     .dtab:hover{background:#f1ece5;text-decoration:none}
     .dtab.on{background:var(--accent);color:#fff}
     .dmain{flex:1;padding:26px 30px;min-width:0}
@@ -65,7 +65,20 @@ function shell(c, active, title, body, notice) {
     th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);font-size:.9rem;vertical-align:top}
     th{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
     .inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    @media(max-width:720px){.dwrap{flex-direction:column}.dside{width:auto;flex:none;height:auto;position:static;flex-direction:row;flex-wrap:wrap;border-right:none;border-bottom:1px solid var(--line)}.dside>div{display:none}}
+    /* iPad landscape / small laptops: slimmer rail */
+    @media(max-width:1100px){.dside{width:190px;flex-basis:190px}.dmain{padding:22px 22px}}
+    /* iPad portrait & phones: sticky horizontal nav that scrolls */
+    @media(max-width:900px){
+      .dwrap{flex-direction:column}
+      .dside{width:auto;flex:none;height:auto;position:sticky;top:0;z-index:50;flex-direction:row;flex-wrap:nowrap;overflow-x:auto;gap:4px;border-right:none;border-bottom:1px solid var(--line);background:var(--bg);padding:10px 12px;-webkit-overflow-scrolling:touch}
+      .dside .brand{flex:0 0 auto;padding:6px 8px!important;font-size:1.2rem}
+      .dside>div{display:none}
+      .dtab{flex:0 0 auto}
+      .dmain{padding:18px 15px}
+      .card{overflow-x:auto}
+    }
+    /* larger tap targets on touch screens */
+    @media(pointer:coarse){.btn.sm{padding:9px 15px}.dtab{padding:12px 14px}input,select,textarea{padding:13px 14px}}
     `
   }))
 }

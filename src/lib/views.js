@@ -80,11 +80,19 @@ export function layout(title, body, opts = {}) {
 <meta property="og:type" content="website"><meta property="og:image" content="/og.svg">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="/favicon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="${accent || '#0f766e'}">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Alisa">
 ${FONTS}
 ${opts.jsonld ? `<script type="application/ld+json">${JSON.stringify(opts.jsonld)}</script>` : ''}
 <style>${BASE_CSS}${accent ? `:root{--accent:${accent};--accent-ink:${accent}}` : ''}${opts.css || ''}</style>
 </head><body>${body}
 <footer><div class="wrap">${t(lang, 'powered_by')} <a href="/">Alisa</a> · ${t(lang, 'footer_tagline')}</div></footer>
+<script>if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js').catch(function(){});</script>
 </body></html>`
 }
 
