@@ -506,6 +506,9 @@ const clientsForShop = (db, shopId) => db.prepare('SELECT id,name,email,phone,no
 // Shared create/edit form. `v` holds prefilled values, `action` the POST target.
 // `loyaltyOn` shows an "apply loyalty reward" picker (create only).
 function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}, loyaltyOn = false) {
+  // On a NEW booking, preselect the first real service so the end time + price
+  // are computed from the start straight away (Custom = no duration = no auto-end).
+  const selService = v.editing ? (v.service_id || '') : (v.service_id != null && v.service_id !== '' ? v.service_id : (services[0] ? services[0].id : ''))
   return `
     <form method="post" action="${action}" class="card" style="padding:22px;max-width:580px">
       <div class="row">
@@ -514,8 +517,8 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
       </div>
       <div class="field"><label>Service</label>
         <select name="service_id" id="svc">
-          <option value="">Custom / other</option>
-          ${services.map(s => `<option value="${s.id}" data-dur="${s.duration_minutes}" data-price="${s.price_cents}" ${v.service_id === s.id ? 'selected' : ''}>${esc(s.name)} · ${s.duration_minutes} min</option>`).join('')}
+          <option value="" ${selService === '' ? 'selected' : ''}>Custom / other</option>
+          ${services.map(s => `<option value="${s.id}" data-dur="${s.duration_minutes}" data-price="${s.price_cents}" ${selService === s.id ? 'selected' : ''}>${esc(s.name)} · ${s.duration_minutes} min</option>`).join('')}
         </select>
       </div>
       <div class="row" style="max-width:360px">
@@ -580,6 +583,8 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
     if(dateEl)dateEl.addEventListener('change',loadTimes);
     if(staffEl)staffEl.addEventListener('change',loadTimes);
     st.addEventListener('change',fillEnd);
+    // Preselected service on a new booking: seed the price now (change won't fire).
+    (function(){var o=svc.selectedOptions[0];if(o&&o.value&&o.dataset.price&&!pr.value)pr.value=(+o.dataset.price/100).toFixed(0);})();
     loadTimes();
     // Searchable client picker — filter saved clients by name / phone / email.
     var CLIENTS=${JSON.stringify(clients.map(cl => ({ id: cl.id, name: cl.name, email: cl.email || '', phone: cl.phone || '', notes: cl.notes || '', rewards: cl.rewards || [] })))};
@@ -778,13 +783,14 @@ app.get('/bookings/:id/edit', async (c) => {
       </div>
       <h4 style="margin:0 0 6px">Payment &amp; service history</h4>
       ${hist.length ? `<div class="card" style="padding:6px 16px;max-height:440px;overflow:auto"><table>
-        <tr><th>When</th><th>Service</th><th>Price</th><th>Deposit</th><th>Status</th></tr>
+        <tr><th>When</th><th>Service</th><th>Price</th><th>Deposit</th><th>Status</th><th>Notes</th></tr>
         ${hist.map(h => `<tr${h.id === b.id ? ' style="background:#f4faf8"' : ''}>
           <td>${esc(formatBookingTime(h.start_time, shop.timezone))}</td>
           <td>${h.requested_staff ? '❤️ ' : ''}${esc(h.service_name || '')}</td>
           <td>${money(h.price_cents, shop.currency)}</td>
           <td>${h.deposit_cents ? money(h.deposit_cents, shop.currency) : '—'}${h.refunded_at ? ' <span class="muted" style="font-size:.7rem">(refunded)</span>' : ''}</td>
           <td><span class="tag ${h.status}">${h.status.replace('_', ' ')}</span></td>
+          <td class="muted" style="font-size:.82rem;max-width:220px;white-space:pre-wrap">${h.notes ? esc(h.notes) : '—'}</td>
         </tr>`).join('')}
       </table></div>` : '<p class="muted">No history yet.</p>'}
     </div>`
@@ -1586,6 +1592,18 @@ app.get('/settings', async (c) => {
       </div>
       <button class="btn">Save settings</button>
     </form>
+
+    <div class="card" style="padding:22px;margin-top:18px;max-width:640px">
+      <h3 style="margin-top:0">📤 Export your data</h3>
+      <p class="muted" style="font-size:.9rem;margin:0 0 14px">Your data is <strong>yours</strong> — take it with you anytime, no lock-in. Download your clients, bookings and reviews as spreadsheets (CSV), or grab a full copy of everything as one file.</p>
+      <div class="inline" style="gap:8px;flex-wrap:wrap">
+        <a class="btn ghost sm" href="/dashboard/export/clients.csv">👤 Clients (CSV)</a>
+        <a class="btn ghost sm" href="/dashboard/export/bookings.csv">🗓️ Bookings (CSV)</a>
+        <a class="btn ghost sm" href="/dashboard/export/reviews.csv">⭐ Reviews (CSV)</a>
+        <a class="btn sm" href="/dashboard/export/all.json">⬇️ Everything (JSON)</a>
+      </div>
+      <p class="muted" style="font-size:.78rem;margin:12px 0 0">CSV files open in Excel, Numbers or Google Sheets. Unlike some platforms, we never hold your customer list hostage.</p>
+    </div>
   `)
 })
 
@@ -1861,8 +1879,8 @@ app.get('/clients/:id', async (c) => {
       <div>
         <h3>Booking history</h3>
         ${history.length ? `<div class="card" style="padding:6px 18px"><table>
-          <tr><th>When</th><th>Service</th><th>Therapist</th><th>Status</th></tr>
-          ${history.map(b => `<tr><td>${esc(formatBookingTime(b.start_time, shop.timezone))}</td><td>${esc(b.service_name || '')}</td><td>${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</td><td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td></tr>`).join('')}
+          <tr><th>When</th><th>Service</th><th>Therapist</th><th>Status</th><th>Notes</th></tr>
+          ${history.map(b => `<tr><td>${esc(formatBookingTime(b.start_time, shop.timezone))}</td><td>${esc(b.service_name || '')}</td><td>${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</td><td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td><td class="muted" style="font-size:.82rem;max-width:220px;white-space:pre-wrap">${b.notes ? esc(b.notes) : '—'}</td></tr>`).join('')}
         </table></div>` : '<p class="muted">No bookings yet.</p>'}
       </div>
     </div>
@@ -1896,6 +1914,78 @@ app.post('/clients/:id/delete', async (c) => {
   await db.prepare('UPDATE bookings SET client_id=NULL WHERE client_id=? AND shop_id=?').bind(id, shop.id).run()
   await db.prepare('DELETE FROM clients WHERE id=? AND shop_id=?').bind(id, shop.id).run()
   return c.redirect('/dashboard/clients')
+})
+
+// ─── Data export ─────────────────────────────────────────────────────────────
+// Your data is yours. One-click, no lock-in — export clients, bookings, reviews
+// as CSV, or everything as a single JSON file. This is the promise the landing
+// page makes, so it must always work.
+const csvCell = (v) => {
+  const s = v == null ? '' : String(v)
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+const toCsv = (headers, rows) =>
+  [headers.map(csvCell).join(','), ...rows.map(r => r.map(csvCell).join(','))].join('\r\n') + '\r\n'
+const csvResponse = (c, filename, body) =>
+  c.body('﻿' + body, 200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${filename}"`,
+  })
+
+app.get('/export/clients.csv', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const rows = (await db.prepare('SELECT * FROM clients WHERE shop_id=? ORDER BY name').bind(shop.id).all()).results || []
+  const csv = toCsv(
+    ['Name', 'Email', 'Phone', 'Notes', 'Added'],
+    rows.map(r => [r.name, r.email, r.phone, r.notes, r.created_at ? formatBookingTime(r.created_at, shop.timezone) : ''])
+  )
+  return csvResponse(c, `${shop.slug}-clients.csv`, csv)
+})
+
+app.get('/export/bookings.csv', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const rows = (await db.prepare('SELECT * FROM bookings WHERE shop_id=? ORDER BY start_time DESC').bind(shop.id).all()).results || []
+  const cur = shop.currency
+  const csv = toCsv(
+    ['When', 'Status', 'Service', 'Therapist', 'Customer', 'Email', 'Phone', 'Price', 'Deposit', 'Refunded', 'Requested therapist', 'Group', 'Notes'],
+    rows.map(b => [
+      formatBookingTime(b.start_time, shop.timezone), b.status, b.service_name, b.staff_name,
+      b.customer_name, b.customer_email, b.customer_phone,
+      b.price_cents != null ? money(b.price_cents, cur) : '', b.deposit_cents ? money(b.deposit_cents, cur) : '',
+      b.refunded_at ? 'yes' : '', b.requested_staff ? 'yes' : '', b.group_id || '', b.notes,
+    ])
+  )
+  return csvResponse(c, `${shop.slug}-bookings.csv`, csv)
+})
+
+app.get('/export/reviews.csv', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const rows = (await db.prepare('SELECT * FROM reviews WHERE shop_id=? ORDER BY created_at DESC').bind(shop.id).all()).results || []
+  const csv = toCsv(
+    ['When', 'Rating', 'Client', 'Therapist', 'Comment', 'Shared to Google'],
+    rows.map(r => [r.created_at ? formatBookingTime(r.created_at, shop.timezone) : '', r.rating, r.customer_name, r.staff_name, r.body, r.shared_google ? 'yes' : ''])
+  )
+  return csvResponse(c, `${shop.slug}-reviews.csv`, csv)
+})
+
+// Everything, in one machine-readable file — nothing held back.
+app.get('/export/all.json', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const grab = async (sql) => (await db.prepare(sql).bind(shop.id).all()).results || []
+  const dump = {
+    exported_at: new Date().toISOString(),
+    shop,
+    services: await grab('SELECT * FROM services WHERE shop_id=? ORDER BY sort_order'),
+    staff: await grab('SELECT * FROM staff WHERE shop_id=? ORDER BY sort_order'),
+    clients: await grab('SELECT * FROM clients WHERE shop_id=? ORDER BY name'),
+    bookings: await grab('SELECT * FROM bookings WHERE shop_id=? ORDER BY start_time DESC'),
+    reviews: await grab('SELECT * FROM reviews WHERE shop_id=? ORDER BY created_at DESC'),
+    loyalty_tiers: await grab('SELECT * FROM loyalty_tiers WHERE shop_id=?'),
+  }
+  return c.body(JSON.stringify(dump, null, 2), 200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${shop.slug}-alisa-export.json"`,
+  })
 })
 
 export default app

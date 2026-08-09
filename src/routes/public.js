@@ -84,6 +84,73 @@ app.get('/', async (c) => {
       <h3 style="margin:.5em 0 .2em;font-size:1.15rem">${t(lang, tk)}</h3><p class="muted" style="margin:0">${t(lang, dk)}</p></div>`).join('')}
   </div>
 
+  <!-- Free forever + own your data -->
+  <div class="wrap" style="padding:44px 20px 10px" id="free">
+    <div class="card" style="padding:36px;border:none;background:linear-gradient(135deg,#0f766e,#0b3d38);color:#fff">
+      <div style="text-align:center;margin-bottom:26px">
+        <span class="pill" style="background:rgba(255,255,255,.15);color:#fff">${t(lang, 'free_pill')}</span>
+        <h2 style="color:#fff;margin:14px 0 8px">${t(lang, 'free_title')}</h2>
+        <p style="color:#bfe3de;max-width:620px;margin:0 auto;font-size:1.05rem">${t(lang, 'free_sub')}</p>
+      </div>
+      <div class="grid g2" style="gap:16px">
+        ${[
+          ['💚', 'free1_t', 'free1_d'],
+          ['📤', 'free2_t', 'free2_d'],
+          ['🤝', 'free3_t', 'free3_d'],
+          ['🎁', 'free4_t', 'free4_d'],
+        ].map(([e, tk, dk]) => `<div style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:20px">
+          <div style="font-size:1.7rem">${e}</div>
+          <h3 style="color:#fff;margin:.4em 0 .2em;font-size:1.1rem">${t(lang, tk)}</h3>
+          <p style="color:#bfe3de;margin:0;font-size:.92rem">${t(lang, dk)}</p></div>`).join('')}
+      </div>
+    </div>
+  </div>
+
+  <!-- Alisa vs Fresha comparison -->
+  <style>
+    table.cmp{width:100%;border-collapse:collapse;min-width:520px}
+    .cmp th,.cmp td{padding:13px 16px;text-align:center;border-bottom:1px solid var(--line);font-size:.92rem}
+    .cmp thead th{font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-bottom:2px solid var(--line)}
+    .cmp td.ft{text-align:left;font-weight:600}
+    .cmp .us{background:rgba(15,118,110,.07)}
+    .cmp thead th.us{color:#0f766e;font-size:.95rem;text-transform:none;letter-spacing:0}
+    .cmp td.us{font-weight:600}
+    .cmp td.them{color:var(--muted)}
+    .cmp .ck{color:#0f9d63;font-weight:800;margin-right:2px}
+    .cmp tbody tr:last-child td{border-bottom:none}
+  </style>
+  <div class="wrap" style="padding:40px 20px 10px" id="compare">
+    <div style="text-align:center;margin-bottom:22px">
+      <span class="pill">${t(lang, 'vs_pill')}</span>
+      <h2 style="margin-top:12px">${t(lang, 'vs_title')}</h2>
+      <p class="muted" style="max-width:560px;margin:0 auto">${t(lang, 'vs_sub')}</p>
+    </div>
+    <div class="card" style="padding:0;overflow-x:auto">
+      <table class="cmp">
+        <thead><tr>
+          <th style="text-align:left">${t(lang, 'vs_feature')}</th>
+          <th class="us">💆 ${t(lang, 'vs_us')}</th>
+          <th>${t(lang, 'vs_them')}</th>
+        </tr></thead>
+        <tbody>
+        ${[
+          ['vs_r1', 'vs_r1a', 'vs_r1b'], ['vs_r2', 'vs_r2a', 'vs_r2b'],
+          ['vs_r3', 'vs_r3a', 'vs_r3b'], ['vs_r4', 'vs_r4a', 'vs_r4b'],
+          ['vs_r5', 'vs_r5a', 'vs_r5b'], ['vs_r6', 'vs_r6a', 'vs_r6b'],
+          ['vs_r7', 'vs_r7a', 'vs_r7b'], ['vs_r8', 'vs_r8a', 'vs_r8b'],
+          ['vs_r9', 'vs_r9a', 'vs_r9b'], ['vs_r10', 'vs_r10a', 'vs_r10b'],
+        ].map(([r, a, b]) => `<tr>
+          <td class="ft">${t(lang, r)}</td>
+          <td class="us"><span class="ck">✓</span> ${t(lang, a)}</td>
+          <td class="them">${t(lang, b)}</td>
+        </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" style="text-align:center;font-size:.75rem;margin:12px auto 0;max-width:560px">${t(lang, 'vs_note')}</p>
+    <div style="text-align:center;margin-top:20px"><a class="btn gold" href="/signup">${t(lang, 'hero_cta')}</a></div>
+  </div>
+
   <div class="wrap" style="padding:50px 20px">
     <div class="card" style="padding:34px;text-align:center;background:linear-gradient(135deg,#0f766e,#0b5750);color:#fff;border:none">
       <h2 style="color:#fff">${t(lang, 'cta_title')}</h2>
