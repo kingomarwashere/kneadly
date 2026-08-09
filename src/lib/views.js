@@ -77,8 +77,9 @@ export function layout(title, body, opts = {}) {
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(desc)}">
 <meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(desc)}">
-<meta property="og:type" content="website"><meta property="og:image" content="/og.svg">
-<meta name="twitter:card" content="summary_large_image">
+<meta property="og:type" content="website"><meta property="og:image" content="/og.svg?v=2">
+<meta property="og:image:type" content="image/svg+xml"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="/og.svg?v=2">
 <link rel="icon" href="/favicon.svg">
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="${accent || '#0f766e'}">

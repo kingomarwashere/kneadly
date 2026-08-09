@@ -57,15 +57,23 @@ app.get('/favicon.svg', (c) =>
     200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' }))
 
 app.get('/og.svg', (c) => {
+  // Everything is drawn with vector shapes / plain Latin text only — no emoji or
+  // arrow glyphs, which render as tofu / codepoints (e.g. "01F486") when a social
+  // platform rasterises the SVG with a font that lacks those glyphs.
+  const petal = 'M0,0 C-13,-28 -6,-55 0,-74 C6,-55 13,-28 0,0 Z'
   const svg = `<svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
-  <rect width="1200" height="630" fill="#0f766e"/>
-  <rect width="1200" height="630" fill="url(#g)"/>
   <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#0b5750"/></linearGradient></defs>
-  <text x="90" y="250" font-family="Georgia,serif" font-weight="600" font-size="120" fill="#faf8f5">💆 Alisa</text>
-  <text x="96" y="330" font-family="Georgia,serif" font-size="42" fill="#c99b5b">Online booking for massage shops</text>
-  <text x="96" y="405" font-family="monospace" font-size="24" fill="#a7d3ce">Take bookings from Google Maps · Collect deposits · Fill your calendar</text>
-  <rect x="96" y="470" width="360" height="70" rx="35" fill="#c99b5b"/>
-  <text x="130" y="515" font-family="Georgia,serif" font-size="30" fill="#241a08" font-weight="600">Start free →</text>
+  <rect width="1200" height="630" fill="url(#g)"/>
+  <g transform="translate(150,236)">
+    <g fill="#b3894e"><path d="${petal}" transform="rotate(-52)"/><path d="${petal}" transform="rotate(52)"/></g>
+    <g fill="#c99b5b"><path d="${petal}" transform="rotate(-27)"/><path d="${petal}" transform="rotate(27)"/><path d="${petal}"/></g>
+  </g>
+  <text x="228" y="252" font-family="Georgia,serif" font-weight="600" font-size="120" fill="#faf8f5">Alisa</text>
+  <text x="96" y="342" font-family="Georgia,serif" font-size="42" fill="#c99b5b">Online booking for massage shops</text>
+  <text x="96" y="412" font-family="monospace" font-size="24" fill="#a7d3ce">Take bookings from Google Maps &#183; Collect deposits &#183; Fill your calendar</text>
+  <rect x="96" y="474" width="340" height="70" rx="35" fill="#c99b5b"/>
+  <text x="130" y="519" font-family="Georgia,serif" font-size="30" fill="#241a08" font-weight="600">Start free</text>
+  <path d="M336,502 l22,17 l-22,17 z" fill="#241a08"/>
 </svg>`
   return c.body(svg, 200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=3600' })
 })
