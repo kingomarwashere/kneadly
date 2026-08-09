@@ -1434,8 +1434,11 @@ app.post('/staff', async (c) => {
     const p = sendTherapistInvite(c.env, id)
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
   }
-  // Default Mon–Sat 9–6 so they can be booked right away
-  for (let dow = 1; dow <= 6; dow++)
+  // Default every day 9–6 so they can be booked right away. The shop's own
+  // opening hours still gate which days customers actually see — so a therapist
+  // is bookable whenever the shop is open (incl. Sunday), and the owner can
+  // untick specific days per therapist afterwards.
+  for (let dow = 0; dow <= 6; dow++)
     await db.prepare('INSERT INTO availability (id, staff_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?)')
       .bind(genId(), id, dow, '09:00', '18:00').run()
   return c.redirect('/dashboard/staff')
