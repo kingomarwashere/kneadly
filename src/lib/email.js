@@ -343,3 +343,61 @@ export async function sendBookingEmails(env, bookingId) {
     console.error('sendBookingEmails failed:', String(e))
   }
 }
+
+// ─── Gift cards ──────────────────────────────────────────────────────────────
+function giftCardBody(lang, { shop, card, base, forRecipient }) {
+  const accent = shop.accent || '#0f766e'
+  const expiry = card.expires_at ? formatBookingTime(card.expires_at, shop.timezone).split(',').slice(0, 2).join(',') : t(lang, 'gift_no_expiry')
+  const greetName = forRecipient ? (card.recipient_name || '') : (card.purchaser_name || '')
+  const intro = forRecipient
+    ? t(lang, 'gift_email_recipient_intro', { from: card.purchaser_name || t(lang, 'gift_someone'), shop: shop.name })
+    : t(lang, 'gift_email_buyer_intro', { shop: shop.name })
+  const msg = forRecipient && card.message
+    ? `<div style="background:#faf7f0;border-radius:12px;padding:14px 16px;margin:0 0 18px;font-style:italic;color:#5b4a2e">“${safe(card.message)}”</div>` : ''
+  const inner = `
+    <h1 style="font-size:20px;margin:0 0 6px">🎁 ${safe(t(lang, 'gift_email_head'))}</h1>
+    ${greetName ? `<p style="color:#6b7c7a;font-size:14px;margin:0 0 4px">${safe(t(lang, 'email_hi', { name: greetName }))}</p>` : ''}
+    <p style="color:#6b7c7a;font-size:14px;margin:0 0 18px">${safe(intro)}</p>
+    ${msg}
+    <div style="text-align:center;border:2px dashed ${accent};border-radius:14px;padding:20px;margin:0 0 18px">
+      <div style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#6b7c7a">${safe(t(lang, 'gift_value'))}</div>
+      <div style="font-size:30px;font-weight:800;color:${accent};margin:2px 0 10px">${safe(money(card.balance_cents, shop.currency))}</div>
+      <div style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#6b7c7a">${safe(t(lang, 'gift_code'))}</div>
+      <div style="font-family:ui-monospace,Menlo,monospace;font-size:22px;font-weight:700;letter-spacing:.06em;margin-top:2px">${safe(card.code)}</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse">
+      ${detailRow(t(lang, 'gift_redeem_at'), shop.name)}
+      ${detailRow(t(lang, 'gift_expires'), expiry)}
+    </table>
+    <p style="color:#6b7c7a;font-size:13px;margin:18px 0 0">${safe(t(lang, 'gift_email_how', { shop: shop.name }))}</p>`
+  const text = `${t(lang, 'gift_email_head')}\n${intro}\n\n${t(lang, 'gift_value')}: ${money(card.balance_cents, shop.currency)}\n${t(lang, 'gift_code')}: ${card.code}\n${t(lang, 'gift_redeem_at')}: ${shop.name}\n${t(lang, 'gift_expires')}: ${expiry}\n\n${t(lang, 'gift_email_how', { shop: shop.name })}`
+  const subject = forRecipient
+    ? t(lang, 'gift_email_recipient_subject', { shop: shop.name })
+    : t(lang, 'gift_email_buyer_subject', { shop: shop.name })
+  return { subject, html: shell(accent, '🎁', shop.name, inner), text }
+}
+
+// Email the purchaser their receipt+code, and (if given) the recipient their gift.
+export async function sendGiftCardEmails(env, cardId) {
+  try {
+    const db = env.DB
+    const card = await db.prepare('SELECT * FROM gift_cards WHERE id=?').bind(cardId).first()
+    if (!card || card.status === 'void' || card.status === 'pending_payment') return
+    const shop = await db.prepare('SELECT * FROM shops WHERE id=?').bind(card.shop_id).first()
+    if (!shop) return
+    const base = env.BASE_URL || 'https://alisa.bored.investments'
+    const lang = card.lang || 'en'
+    if (card.purchaser_email) {
+      const m = giftCardBody(lang, { shop, card, base, forRecipient: false })
+      const r = await sendEmail(env, { to: card.purchaser_email, subject: m.subject, html: m.html, text: m.text, replyTo: shop.email || undefined })
+      if (!r.ok) console.error('gift buyer email failed:', r.error)
+    }
+    if (card.recipient_email && card.recipient_email !== card.purchaser_email) {
+      const m = giftCardBody(lang, { shop, card, base, forRecipient: true })
+      const r = await sendEmail(env, { to: card.recipient_email, subject: m.subject, html: m.html, text: m.text, replyTo: card.purchaser_email || shop.email || undefined })
+      if (!r.ok) console.error('gift recipient email failed:', r.error)
+    }
+  } catch (e) {
+    console.error('sendGiftCardEmails failed:', String(e))
+  }
+}

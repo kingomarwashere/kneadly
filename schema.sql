@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS shops (
   loyalty_threshold INTEGER NOT NULL DEFAULT 5,   -- completed visits per reward
   loyalty_type TEXT NOT NULL DEFAULT 'amount',    -- 'amount' | 'percent'
   loyalty_value INTEGER NOT NULL DEFAULT 2000,    -- cents (amount) or percent
+  gift_cards_enabled INTEGER NOT NULL DEFAULT 0,  -- sell gift cards online (needs Stripe connected)
+  gift_card_expiry_years INTEGER NOT NULL DEFAULT 3,  -- validity from purchase; min 3 (AU law)
   is_published INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
@@ -211,6 +213,44 @@ CREATE INDEX IF NOT EXISTS idx_clients_shop ON clients(shop_id);
 CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(shop_id, email);
 CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(shop_id, phone);
 
+-- Gift cards: bought online (Stripe Connect), redeemed at the shop.
+CREATE TABLE IF NOT EXISTS gift_cards (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  code TEXT NOT NULL UNIQUE,        -- human-friendly, e.g. SER-4F9K-QP2M
+  initial_cents INTEGER NOT NULL,
+  balance_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending_payment', -- pending_payment | active | redeemed | void
+  purchaser_name TEXT,
+  purchaser_email TEXT,
+  recipient_name TEXT,
+  recipient_email TEXT,
+  message TEXT,
+  lang TEXT,
+  stripe_session_id TEXT,
+  stripe_payment_intent_id TEXT,
+  stripe_charge_id TEXT,
+  activated_at INTEGER,             -- set when payment completes
+  expires_at INTEGER,               -- unix seconds; null = no expiry
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_giftcards_shop ON gift_cards(shop_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_giftcards_code ON gift_cards(code);
+
+-- Redemption / top-up ledger (negative = redeemed toward a booking; positive = restore/refund).
+CREATE TABLE IF NOT EXISTS gift_card_txns (
+  id TEXT PRIMARY KEY,
+  gift_card_id TEXT NOT NULL,
+  booking_id TEXT,
+  amount_cents INTEGER NOT NULL,
+  note TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (gift_card_id) REFERENCES gift_cards(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_gctxn_card ON gift_card_txns(gift_card_id, created_at);
+
 -- Days a therapist is off (holidays, sick days) — blocks that whole date
 CREATE TABLE IF NOT EXISTS time_off (
   id TEXT PRIMARY KEY,
@@ -252,6 +292,8 @@ CREATE TABLE IF NOT EXISTS bookings (
   group_id TEXT,                  -- links bookings made together (couples / group)
   room TEXT,                      -- optional room label (e.g. "Couple Room 1")
   loyalty_applied INTEGER NOT NULL DEFAULT 0,  -- loyalty discount applied to this booking (cents)
+  gift_applied INTEGER NOT NULL DEFAULT 0,     -- gift-card credit redeemed toward this booking (cents)
+  gift_card_id TEXT,                           -- gift card redeemed on this booking (nullable)
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,
   FOREIGN KEY (service_id) REFERENCES services(id),

@@ -7,6 +7,7 @@ import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTher
 import { findOrCreateClient } from '../lib/clients.js'
 import { loyaltyStatus, tierDiscount, tierLabel, getTiers, loyaltyAvailByClient } from '../lib/loyalty.js'
 import { freeTherapist, therapistFreeAt, shopHoursFor, availStartTimes } from '../lib/booking.js'
+import { findGiftCard, redeemableState, redeemGift, restoreGiftForBooking } from '../lib/giftcard.js'
 import qrcode from '../lib/qrcode.js'
 
 // QR code as an inline SVG string (error-correction M, auto version).
@@ -44,6 +45,7 @@ function shell(c, active, title, body, notice) {
       ${tab('bookings', '🗓️ Bookings')}
       ${tab('clients', '👤 Clients')}
       ${tab('reviews', '⭐ Reviews')}
+      ${tab('gift-cards', '🎁 Gift cards')}
       ${tab('services', '💆 Services')}
       ${tab('staff', '🧑‍⚕️ Therapists')}
       ${tab('settings', '⚙️ Settings')}
@@ -486,6 +488,7 @@ async function bookingAction(c, action) {
     for (const x of targets) {
       await db.prepare("UPDATE bookings SET status='cancelled' WHERE id=?").bind(x.id).run()
       if (x.loyalty_applied > 0) await db.prepare('DELETE FROM loyalty_redemptions WHERE booking_id=?').bind(x.id).run()
+      if (x.gift_applied > 0 && x.gift_card_id) await restoreGiftForBooking(db, x.id)
       if (x.customer_email) emailIds.push(x.id)
     }
     const emailP = Promise.all(emailIds.map(eid => sendCancellationEmail(c.env, eid)))
@@ -555,6 +558,9 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
       <div class="field"><label>Appointment notes <span class="muted">(this booking only)</span></label><input name="notes" value="${esc(v.notes || '')}" placeholder="Injuries, preferences…"></div>
       <div class="field"><label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" name="requested_staff" value="1" style="width:auto" ${v.requested_staff ? 'checked' : ''}> ❤️ Client requested this therapist — don’t reassign to anyone else</label></div>
       ${loyaltyOn ? `<div class="field" id="loyaltyrow" style="display:none"><label style="color:#8a6414">🎁 Apply loyalty reward</label><select name="loyalty_milestone" id="loyaltysel"><option value="">— none —</option></select></div>` : ''}
+      ${shop.gift_cards_enabled ? (v.gift_applied > 0
+        ? `<div class="field"><label style="color:#0f766e">🎁 Gift card applied</label><div class="notice ok" style="margin:0">${money(v.gift_applied, shop.currency)} redeemed on this booking.</div></div>`
+        : `<div class="field"><label>🎁 Redeem a gift card <span class="muted">(optional)</span></label><input name="gift_code" placeholder="Enter the customer’s gift card code" style="font-family:ui-monospace,monospace;letter-spacing:.03em"><p class="muted" style="font-size:.78rem;margin:4px 0 0">The card’s value comes off the price; any leftover stays on the card.</p></div>`) : ''}
       <button class="btn">${submitLabel}</button>
     </form>
     <script>
@@ -657,8 +663,23 @@ async function resolveBookingInput(c, shop, excludeId = null) {
   return {
     date, staff, startUnix, endUnix, serviceId: sv.id, serviceName: customName || sv.name, priceCents,
     customerName, email, phone, clientId, notes: (f.notes || '').toString(), requested: f.requested_staff ? 1 : 0,
-    loyaltyMilestone: parseInt(f.loyalty_milestone) || 0,
+    loyaltyMilestone: parseInt(f.loyalty_milestone) || 0, giftCode: (f.gift_code || '').toString().trim(),
   }
+}
+
+// Redeem a gift card against a just-created/edited booking. Applies min(balance,
+// remaining price) atomically and records it on the booking. Returns cents applied.
+async function applyGiftToBooking(c, shop, bookingId, giftCode, remainingCents) {
+  if (!giftCode || remainingCents <= 0 || !shop.gift_cards_enabled) return 0
+  const db = c.env.DB
+  const card = await findGiftCard(db, shop.id, giftCode)
+  if (!redeemableState(card, Math.floor(Date.now() / 1000)).ok) return 0
+  const applied = await redeemGift(db, card, remainingCents, bookingId, `Redeemed at ${shop.name}`)
+  if (applied > 0) {
+    await db.prepare('UPDATE bookings SET gift_applied=?, gift_card_id=?, price_cents=MAX(0, price_cents-?) WHERE id=?')
+      .bind(applied, card.id, applied, bookingId).run()
+  }
+  return applied
 }
 
 app.get('/bookings/new', async (c) => {
@@ -721,6 +742,7 @@ app.post('/bookings/new', async (c) => {
     .bind(id, shop.id, r.serviceId, r.staff.id, r.customerName, r.email, r.phone,
       r.startUnix, r.endUnix, priceCents, r.serviceName, r.staff.name, r.notes, r.clientId, r.requested, loyaltyApplied).run()
   if (redeemMilestone) await db.prepare('INSERT INTO loyalty_redemptions (id, shop_id, client_id, milestone, discount_cents, booking_id) VALUES (?, ?, ?, ?, ?, ?)').bind(genId(), shop.id, r.clientId, redeemMilestone, loyaltyApplied, id).run()
+  if (r.giftCode) await applyGiftToBooking(c, shop, id, r.giftCode, priceCents)
 
   if (r.email) {
     const p = sendBookingEmails(c.env, id)
@@ -753,7 +775,7 @@ app.get('/bookings/:id/edit', async (c) => {
     // Blank when it just matches the service price → a blank field means "use the
     // selected service's price", so switching services updates price server-side too.
     price: (svcRow && b.price_cents === svcRow.price_cents) ? '' : (b.price_cents ? b.price_cents / 100 : ''),
-    client_id: b.client_id || '', requested_staff: b.requested_staff, editing: true,
+    client_id: b.client_id || '', requested_staff: b.requested_staff, editing: true, gift_applied: b.gift_applied || 0,
     customer_name: b.customer_name, customer_email: b.customer_email, customer_phone: b.customer_phone, notes: b.notes,
   }
 
@@ -820,10 +842,14 @@ app.post('/bookings/:id/edit', async (c) => {
   const r = await resolveBookingInput(c, shop, id)
   if (r.error) return c.redirect(`/dashboard/bookings/${id}/edit${r.busy ? '?err=busy' : ''}`)
 
+  // Preserve any gift-card credit already redeemed on this booking (keep it off
+  // the new price); a fresh code can only be applied if none is applied yet.
+  const alreadyGift = b.gift_applied || 0
   await db.prepare(`UPDATE bookings SET service_id=?, staff_id=?, customer_name=?, customer_email=?, customer_phone=?,
     start_time=?, end_time=?, price_cents=?, service_name=?, staff_name=?, notes=?, client_id=?, requested_staff=? WHERE id=?`)
     .bind(r.serviceId, r.staff.id, r.customerName, r.email, r.phone,
-      r.startUnix, r.endUnix, r.priceCents, r.serviceName, r.staff.name, r.notes, r.clientId, r.requested, id).run()
+      r.startUnix, r.endUnix, Math.max(0, r.priceCents - alreadyGift), r.serviceName, r.staff.name, r.notes, r.clientId, r.requested, id).run()
+  if (!alreadyGift && r.giftCode) await applyGiftToBooking(c, shop, id, r.giftCode, r.priceCents)
 
   // If it was moved to a new time, email the customer that it was rescheduled.
   if (r.email && r.startUnix !== b.start_time) {
@@ -1603,6 +1629,7 @@ app.get('/settings', async (c) => {
         <a class="btn ghost sm" href="/dashboard/export/clients.csv">👤 Clients (CSV)</a>
         <a class="btn ghost sm" href="/dashboard/export/bookings.csv">🗓️ Bookings (CSV)</a>
         <a class="btn ghost sm" href="/dashboard/export/reviews.csv">⭐ Reviews (CSV)</a>
+        <a class="btn ghost sm" href="/dashboard/export/gift-cards.csv">🎁 Gift cards (CSV)</a>
         <a class="btn sm" href="/dashboard/export/all.json">⬇️ Everything (JSON)</a>
       </div>
       <p class="muted" style="font-size:.78rem;margin:12px 0 0">CSV files open in Excel, Numbers or Google Sheets. Unlike some platforms, we never hold your customer list hostage.</p>
@@ -1919,6 +1946,87 @@ app.post('/clients/:id/delete', async (c) => {
   return c.redirect('/dashboard/clients')
 })
 
+// ─── Gift cards ──────────────────────────────────────────────────────────────
+const giftStatusTag = (s) => {
+  const map = { active: ['completed', 'Active'], redeemed: ['', 'Redeemed'], pending_payment: ['pending_payment', 'Pending'], void: ['cancelled', 'Void'] }
+  const [cls, label] = map[s] || ['', s]
+  return `<span class="tag ${cls}">${label}</span>`
+}
+
+app.get('/gift-cards', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
+  const connected = !!(c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled)
+  const cards = (await db.prepare('SELECT * FROM gift_cards WHERE shop_id=? ORDER BY created_at DESC LIMIT 500').bind(shop.id).all()).results || []
+  const active = cards.filter(g => g.status === 'active' || g.status === 'redeemed')
+  const sold = active.reduce((s, g) => s + g.initial_cents, 0)
+  const outstanding = active.reduce((s, g) => s + g.balance_cents, 0)
+  const giftUrl = `${base}/${shop.slug}/gift`
+  const saved = c.req.query('saved')
+
+  const body = `
+    <h2>🎁 Gift cards</h2>
+    <p class="muted" style="margin-top:-6px">Sell gift cards online — money goes straight to your Stripe account (Alisa keeps a 1% platform fee, like deposits). Customers redeem them here at the shop.</p>
+    ${saved ? '<div class="notice ok" style="margin-bottom:12px">Saved ✓</div>' : ''}
+
+    <div class="grid g3" style="margin:14px 0">
+      <div class="card" style="padding:16px"><div class="muted" style="font-size:.8rem">Cards sold</div><div class="stat" style="font-size:1.5rem">${active.length}</div></div>
+      <div class="card" style="padding:16px"><div class="muted" style="font-size:.8rem">Total sold</div><div class="stat" style="font-size:1.5rem">${money(sold, shop.currency)}</div></div>
+      <div class="card" style="padding:16px"><div class="muted" style="font-size:.8rem">Outstanding balance</div><div class="stat" style="font-size:1.5rem">${money(outstanding, shop.currency)}</div></div>
+    </div>
+
+    <form method="post" action="/dashboard/gift-cards/config" class="card" style="padding:22px;margin-bottom:18px;max-width:640px">
+      <h3 style="margin-top:0">Setup</h3>
+      ${!connected ? `<div class="notice err" style="margin-bottom:12px">⚠️ Gift cards are sold online only, so you must <a href="/dashboard/settings">connect your Stripe account</a> first. You can turn them on now, but the buy page stays unavailable until Stripe is connected.</div>` : ''}
+      <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" name="gift_cards_enabled" value="1" style="width:auto" ${shop.gift_cards_enabled ? 'checked' : ''}> Sell gift cards on my booking page</label>
+      <div class="field" style="margin-top:14px;max-width:280px"><label>Validity (years from purchase)</label>
+        <input type="number" name="gift_card_expiry_years" min="3" max="99" value="${shop.gift_card_expiry_years || 3}">
+        <p class="muted" style="font-size:.8rem;margin:4px 0 0">Minimum 3 years (Australian gift-card law). Cards can’t be redeemed after this.</p></div>
+      <button class="btn" style="margin-top:14px">Save</button>
+    </form>
+
+    ${shop.gift_cards_enabled ? `<div class="card" style="padding:18px 22px;margin-bottom:18px;max-width:640px">
+      <h3 style="margin-top:0">Share your gift card page</h3>
+      <p class="muted" style="font-size:.88rem;margin:0 0 8px">Send this link, add it to your website, or post it on social — customers buy in a couple of taps.</p>
+      <div class="inline" style="gap:8px;flex-wrap:wrap">
+        <input value="${esc(giftUrl)}" readonly onclick="this.select()" style="flex:1;min-width:220px;font-size:.85rem">
+        <a class="btn ghost sm" href="${esc(giftUrl)}" target="_blank">Open →</a>
+      </div>
+    </div>` : ''}
+
+    <h3>All gift cards</h3>
+    ${cards.length ? `<div class="card" style="padding:6px 16px;overflow-x:auto"><table>
+      <tr><th>Code</th><th>Value</th><th>Balance</th><th>Status</th><th>Bought by</th><th>For</th><th>Expires</th><th></th></tr>
+      ${cards.map(g => `<tr>
+        <td style="font-family:ui-monospace,monospace">${esc(g.code)}</td>
+        <td>${money(g.initial_cents, shop.currency)}</td>
+        <td><strong>${money(g.balance_cents, shop.currency)}</strong></td>
+        <td>${giftStatusTag(g.status)}</td>
+        <td>${esc(g.purchaser_name || '')}<div class="muted" style="font-size:.78rem">${esc(g.purchaser_email || '')}</div></td>
+        <td>${esc(g.recipient_name || '—')}</td>
+        <td class="muted" style="font-size:.82rem">${g.expires_at ? esc(formatBookingTime(g.expires_at, shop.timezone).split(',').slice(0, 2).join(',')) : '—'}</td>
+        <td>${(g.status === 'active' || g.status === 'redeemed') ? `<form method="post" action="/dashboard/gift-cards/${g.id}/void" onsubmit="return confirm('Void this gift card? Its remaining balance can no longer be used. This does not refund the buyer.')"><button class="btn danger sm">Void</button></form>` : ''}</td>
+      </tr>`).join('')}
+    </table></div>` : '<p class="muted">No gift cards sold yet. Turn them on above and share your link.</p>'}
+  `
+  return shell(c, 'gift-cards', 'Gift cards', body)
+})
+
+app.post('/gift-cards/config', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const f = await c.req.parseBody()
+  const enabled = f.gift_cards_enabled ? 1 : 0
+  const years = Math.min(99, Math.max(3, parseInt(f.gift_card_expiry_years) || 3))
+  await db.prepare('UPDATE shops SET gift_cards_enabled=?, gift_card_expiry_years=? WHERE id=?').bind(enabled, years, shop.id).run()
+  return c.redirect('/dashboard/gift-cards?saved=1')
+})
+
+app.post('/gift-cards/:id/void', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  await db.prepare("UPDATE gift_cards SET status='void' WHERE id=? AND shop_id=? AND status IN ('active','redeemed')").bind(c.req.param('id'), shop.id).run()
+  return c.redirect('/dashboard/gift-cards')
+})
+
 // ─── Data export ─────────────────────────────────────────────────────────────
 // Your data is yours. One-click, no lock-in — export clients, bookings, reviews
 // as CSV, or everything as a single JSON file. This is the promise the landing
@@ -1971,6 +2079,18 @@ app.get('/export/reviews.csv', async (c) => {
   return csvResponse(c, `${shop.slug}-reviews.csv`, csv)
 })
 
+app.get('/export/gift-cards.csv', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const rows = (await db.prepare('SELECT * FROM gift_cards WHERE shop_id=? ORDER BY created_at DESC').bind(shop.id).all()).results || []
+  const cur = shop.currency
+  const csv = toCsv(
+    ['Code', 'Value', 'Balance', 'Status', 'Buyer', 'Buyer email', 'Recipient', 'Recipient email', 'Issued', 'Expires'],
+    rows.map(g => [g.code, money(g.initial_cents, cur), money(g.balance_cents, cur), g.status, g.purchaser_name, g.purchaser_email, g.recipient_name, g.recipient_email,
+      g.created_at ? formatBookingTime(g.created_at, shop.timezone) : '', g.expires_at ? formatBookingTime(g.expires_at, shop.timezone) : ''])
+  )
+  return csvResponse(c, `${shop.slug}-gift-cards.csv`, csv)
+})
+
 // Everything, in one machine-readable file — nothing held back.
 app.get('/export/all.json', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
@@ -1984,6 +2104,8 @@ app.get('/export/all.json', async (c) => {
     bookings: await grab('SELECT * FROM bookings WHERE shop_id=? ORDER BY start_time DESC'),
     reviews: await grab('SELECT * FROM reviews WHERE shop_id=? ORDER BY created_at DESC'),
     loyalty_tiers: await grab('SELECT * FROM loyalty_tiers WHERE shop_id=?'),
+    gift_cards: await grab('SELECT * FROM gift_cards WHERE shop_id=? ORDER BY created_at DESC'),
+    gift_card_txns: (await db.prepare('SELECT tx.* FROM gift_card_txns tx JOIN gift_cards g ON g.id=tx.gift_card_id WHERE g.shop_id=? ORDER BY tx.created_at DESC').bind(shop.id).all()).results || [],
   }
   return c.body(JSON.stringify(dump, null, 2), 200, {
     'Content-Type': 'application/json; charset=utf-8',

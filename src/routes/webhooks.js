@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { stripeClient } from '../lib/stripe.js'
-import { sendBookingEmails } from '../lib/email.js'
+import { sendBookingEmails, sendGiftCardEmails } from '../lib/email.js'
 
 const app = new Hono()
 
@@ -31,6 +31,26 @@ app.post('/stripe', async (c) => {
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object
+
+    // Gift-card purchase → activate the card, set expiry, email buyer + recipient.
+    if (session.metadata?.kind === 'giftcard') {
+      const cardId = session.metadata.gift_card_id
+      const card = cardId && await db.prepare('SELECT * FROM gift_cards WHERE id=?').bind(cardId).first()
+      if (card && card.status === 'pending_payment') {
+        const shop = await db.prepare('SELECT gift_card_expiry_years, timezone FROM shops WHERE id=?').bind(card.shop_id).first()
+        const years = Math.max(3, shop?.gift_card_expiry_years || 3)
+        const now = Math.floor(Date.now() / 1000)
+        const expires = now + years * 365 * 24 * 3600
+        let chargeId = null
+        try { chargeId = (await stripeClient(c.env.STRIPE_SECRET_KEY).retrievePaymentIntent(session.payment_intent, { account })).latest_charge } catch (e) { console.error('gift charge lookup:', e.message) }
+        await db.prepare("UPDATE gift_cards SET status='active', activated_at=?, expires_at=?, stripe_session_id=?, stripe_payment_intent_id=?, stripe_charge_id=? WHERE id=?")
+          .bind(now, expires, session.id, session.payment_intent, chargeId, cardId).run()
+        const p = sendGiftCardEmails(c.env, cardId)
+        if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
+      }
+      return c.json({ ok: true })
+    }
+
     const bookingId = session.metadata?.booking_id
     if (!bookingId) return c.json({ ok: true })
     const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first()
@@ -69,7 +89,9 @@ app.post('/stripe', async (c) => {
 
   if (event.type === 'checkout.session.expired') {
     const meta = event.data.object.metadata || {}
-    if (meta.group_id) {
+    if (meta.kind === 'giftcard' && meta.gift_card_id) {
+      await db.prepare("UPDATE gift_cards SET status='void' WHERE id=? AND status='pending_payment'").bind(meta.gift_card_id).run()
+    } else if (meta.group_id) {
       await db.prepare("UPDATE bookings SET status='cancelled' WHERE group_id=? AND status='pending_payment'").bind(meta.group_id).run()
     } else if (meta.booking_id) {
       await db.prepare("UPDATE bookings SET status='cancelled' WHERE id=? AND status='pending_payment'").bind(meta.booking_id).run()

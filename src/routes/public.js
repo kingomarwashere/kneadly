@@ -6,6 +6,7 @@ import { formatBookingTime, formatDate } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
 import { genId } from '../lib/auth.js'
 import { sendBookingEmails } from '../lib/email.js'
+import { generateGiftCode, findGiftCard, redeemableState } from '../lib/giftcard.js'
 import { findOrCreateClient } from '../lib/clients.js'
 import { translate, translateAll } from '../lib/translate.js'
 import { loyaltyStatus } from '../lib/loyalty.js'
@@ -80,6 +81,7 @@ app.get('/', async (c) => {
       ['🧖', 'feat4_t', 'feat4_d'],
       ['⏱️', 'feat5_t', 'feat5_d'],
       ['🔗', 'feat6_t', 'feat6_d'],
+      ['🎁', 'feat_gift_t', 'feat_gift_d'],
     ].map(([e, tk, dk]) => `<div class="card" style="padding:24px"><div style="font-size:2rem">${e}</div>
       <h3 style="margin:.5em 0 .2em;font-size:1.15rem">${t(lang, tk)}</h3><p class="muted" style="margin:0">${t(lang, dk)}</p></div>`).join('')}
   </div>
@@ -139,6 +141,7 @@ app.get('/', async (c) => {
           ['vs_r5', 'vs_r5a', 'vs_r5b'], ['vs_r6', 'vs_r6a', 'vs_r6b'],
           ['vs_r7', 'vs_r7a', 'vs_r7b'], ['vs_r8', 'vs_r8a', 'vs_r8b'],
           ['vs_r9', 'vs_r9a', 'vs_r9b'], ['vs_r10', 'vs_r10a', 'vs_r10b'],
+          ['vs_r11', 'vs_r11a', 'vs_r11b'],
         ].map(([r, a, b]) => `<tr>
           <td class="ft">${t(lang, r)}</td>
           <td class="us"><span class="ck">✓</span> ${t(lang, a)}</td>
@@ -168,6 +171,197 @@ app.get('/', async (c) => {
     }
   }))
 })
+
+// ─── Gift cards ──────────────────────────────────────────────────────────────
+const GIFT_PRESETS = [5000, 10000, 15000, 20000]  // cents
+const GIFT_MIN = 1000                              // $10 minimum
+
+function giftPage(c, shop, lang, { inner, title }) {
+  const user = c.get('user')
+  return c.html(layout(`${title} — ${shop.name}`, `
+    ${siteNav(user, lang)}
+    <div class="wrap" style="max-width:640px;padding:34px 20px">
+      <a href="/${shop.slug}" class="muted" style="font-size:.9rem">← ${esc(shop.name)}</a>
+      ${inner}
+    </div>`, { lang }))
+}
+
+app.get('/:slug/gift', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published) return c.notFound()
+  const canSell = !!(shop.gift_cards_enabled && c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled)
+  const cur = shop.currency
+  if (!canSell) {
+    return giftPage(c, shop, lang, {
+      title: t(lang, 'gift_nav'),
+      inner: `<h1 style="margin:.3em 0">🎁 ${esc(t(lang, 'gift_nav'))}</h1>
+        <p class="muted">${esc(t(lang, 'gift_unavailable'))}</p>
+        <p style="margin-top:16px"><a class="btn ghost" href="/${shop.slug}/gift/check">${esc(t(lang, 'gift_check_link'))} →</a></p>`
+    })
+  }
+  const err = c.req.query('err')
+  const presets = GIFT_PRESETS.map((cents, i) => `
+    <label class="gopt"><input type="radio" name="preset" value="${cents}" ${i === 1 ? 'checked' : ''}> <span>${esc(money(cents, cur))}</span></label>`).join('')
+  const inner = `
+    <h1 style="margin:.3em 0 .1em">🎁 ${esc(t(lang, 'gift_buy_title'))}</h1>
+    <p class="muted" style="margin-top:0">${esc(t(lang, 'gift_buy_sub', { shop: shop.name }))}</p>
+    ${err ? `<div class="notice err" style="margin:10px 0">${esc(decodeURIComponent(err).slice(0, 200))}</div>` : ''}
+    <form method="post" action="/${shop.slug}/gift" class="card" style="padding:24px;margin-top:14px">
+      <label style="font-weight:600;display:block;margin-bottom:8px">${esc(t(lang, 'gift_choose_amount'))}</label>
+      <div class="gopts">${presets}
+        <label class="gopt"><input type="radio" name="preset" value="custom"> <span>${esc(t(lang, 'gift_custom_amount'))}</span></label>
+      </div>
+      <div class="field" style="margin-top:10px"><label>${esc(t(lang, 'gift_custom_amount'))} (${cur.toUpperCase()})</label>
+        <input type="number" name="custom" min="10" step="1" placeholder="50"></div>
+      <p class="muted" style="font-size:.8rem;margin:2px 0 16px">${esc(t(lang, 'gift_min', { amount: money(GIFT_MIN, cur) }))}</p>
+      <div class="row">
+        <div class="field"><label>${esc(t(lang, 'gift_your_name'))}</label><input name="buyer_name" required></div>
+        <div class="field"><label>${esc(t(lang, 'gift_your_email'))}</label><input type="email" name="buyer_email" required></div>
+      </div>
+      <details style="margin:6px 0 14px"><summary style="cursor:pointer;font-weight:600">${esc(t(lang, 'gift_to_optional'))}</summary>
+        <p class="muted" style="font-size:.82rem;margin:8px 0">${esc(t(lang, 'gift_to_help'))}</p>
+        <div class="row">
+          <div class="field"><label>${esc(t(lang, 'gift_recipient_name'))}</label><input name="recipient_name"></div>
+          <div class="field"><label>${esc(t(lang, 'gift_recipient_email'))}</label><input type="email" name="recipient_email"></div>
+        </div>
+        <div class="field"><label>${esc(t(lang, 'gift_message'))}</label><textarea name="message" rows="2" maxlength="300" placeholder="${esc(t(lang, 'gift_message_ph'))}"></textarea></div>
+      </details>
+      <button class="btn gold" style="width:100%">${esc(t(lang, 'gift_buy_btn'))}</button>
+      <p class="muted" style="font-size:.8rem;text-align:center;margin:12px 0 0">${esc(t(lang, 'gift_pay_note'))}</p>
+    </form>
+    <p style="text-align:center;margin-top:14px"><a class="muted" href="/${shop.slug}/gift/check">${esc(t(lang, 'gift_check_link'))} →</a></p>
+    <style>
+      .gopts{display:flex;flex-wrap:wrap;gap:10px}
+      .gopt{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:12px;padding:12px 16px;cursor:pointer;font-weight:600}
+      .gopt input{width:auto}
+      .gopt:has(input:checked){border-color:var(--accent);background:rgba(15,118,110,.06)}
+    </style>
+    <script>
+      var f=document.querySelector('form'),cu=f.custom;
+      f.querySelectorAll('input[name=preset]').forEach(function(r){r.addEventListener('change',function(){ if(f.preset.value==='custom'){cu.focus();} });});
+      cu.addEventListener('focus',function(){ var c=f.querySelector('input[value=custom]'); if(c)c.checked=true; });
+    </script>`
+  return giftPage(c, shop, lang, { title: t(lang, 'gift_nav'), inner })
+})
+
+app.post('/:slug/gift', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published) return c.notFound()
+  const canSell = !!(shop.gift_cards_enabled && c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled)
+  const gerr = (m) => c.redirect(`/${shop.slug}/gift?err=${encodeURIComponent(m)}`)
+  if (!canSell) return gerr(t(lang, 'gift_unavailable'))
+
+  const f = await c.req.parseBody()
+  const preset = (f.preset || '').toString()
+  let cents = preset === 'custom' ? Math.round((parseFloat(f.custom) || 0) * 100) : parseInt(preset) || 0
+  if (!Number.isFinite(cents) || cents < GIFT_MIN) return gerr(t(lang, 'gift_min', { amount: money(GIFT_MIN, shop.currency) }))
+  cents = Math.min(cents, 500000) // sane cap $5000
+
+  const buyerName = (f.buyer_name || '').toString().trim()
+  const buyerEmail = (f.buyer_email || '').toString().trim().toLowerCase()
+  if (!buyerName || !buyerEmail) return gerr(t(lang, 'gift_choose_amount'))
+  const recipientName = (f.recipient_name || '').toString().trim() || null
+  const recipientEmail = (f.recipient_email || '').toString().trim().toLowerCase() || null
+  const message = (f.message || '').toString().trim().slice(0, 300) || null
+
+  const id = genId()
+  const code = await generateGiftCode(db, shop.slug)
+  await db.prepare(`INSERT INTO gift_cards
+    (id, shop_id, code, initial_cents, balance_cents, currency, status, purchaser_name, purchaser_email, recipient_name, recipient_email, message, lang)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending_payment', ?, ?, ?, ?, ?, ?)`)
+    .bind(id, shop.id, code, cents, cents, shop.currency, buyerName, buyerEmail, recipientName, recipientEmail, message, lang).run()
+
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
+  const fee = Math.max(0, Math.round(cents * 0.01))
+  try {
+    const session = await stripeClient(c.env.STRIPE_SECRET_KEY).createCheckoutSession({
+      mode: 'payment',
+      success_url: `${base}/${shop.slug}/gift/success/${id}`,
+      cancel_url: `${base}/${shop.slug}/gift`,
+      customer_email: buyerEmail,
+      line_items: [{ quantity: 1, price_data: {
+        currency: shop.currency, unit_amount: cents,
+        product_data: { name: `${t(lang, 'gift_nav')} — ${shop.name}`, description: `${money(cents, shop.currency)} gift card` }
+      } }],
+      payment_intent_data: fee > 0 ? { application_fee_amount: fee } : undefined,
+      metadata: { kind: 'giftcard', gift_card_id: id },
+      expires_at: Math.floor(Date.now() / 1000) + 1800,
+    }, { account: shop.stripe_account_id })
+    await db.prepare('UPDATE gift_cards SET stripe_session_id=? WHERE id=?').bind(session.id, id).run()
+    return c.redirect(session.url)
+  } catch (err) {
+    console.error('gift stripe error:', err.message)
+    await db.prepare("UPDATE gift_cards SET status='void' WHERE id=?").bind(id).run()
+    return gerr(err.message || 'Payment could not be started.')
+  }
+})
+
+app.get('/:slug/gift/success/:id', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop) return c.notFound()
+  const card = await db.prepare('SELECT * FROM gift_cards WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (!card) return c.notFound()
+  const active = card.status === 'active' || card.status === 'redeemed'
+  const to = card.recipient_email || card.purchaser_email || ''
+  const inner = `
+    <div class="card" style="padding:30px;text-align:center;margin-top:16px">
+      <div style="font-size:2.4rem">🎁</div>
+      <h1 style="margin:.2em 0">${esc(t(lang, 'gift_success_head'))}</h1>
+      <p class="muted">${active ? esc(t(lang, 'gift_success_sub', { email: to, shop: shop.name })) : esc(t(lang, 'gift_success_pending'))}</p>
+      ${active ? `<div style="border:2px dashed var(--accent);border-radius:14px;padding:18px;margin:16px auto 0;max-width:320px">
+        <div class="muted" style="font-size:.75rem;text-transform:uppercase;letter-spacing:.08em">${esc(t(lang, 'gift_code'))}</div>
+        <div style="font-family:ui-monospace,monospace;font-size:1.5rem;font-weight:700;letter-spacing:.05em">${esc(card.code)}</div>
+        <div style="font-weight:700;margin-top:8px">${esc(money(card.balance_cents, shop.currency))}</div>
+      </div>` : ''}
+      <p style="margin-top:22px"><a class="btn" href="/${shop.slug}">${esc(t(lang, 'back_to', { shop: shop.name }))}</a></p>
+    </div>`
+  return giftPage(c, shop, lang, { title: t(lang, 'gift_success_head'), inner })
+})
+
+app.get('/:slug/gift/check', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published) return c.notFound()
+  const inner = giftCheckForm(shop, lang, null)
+  return giftPage(c, shop, lang, { title: t(lang, 'gift_check_title'), inner })
+})
+
+app.post('/:slug/gift/check', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published) return c.notFound()
+  const f = await c.req.parseBody()
+  const card = await findGiftCard(db, shop.id, (f.code || '').toString())
+  const nowSec = Math.floor(Date.now() / 1000)
+  let result
+  if (!card || card.status === 'void' || card.status === 'pending_payment') result = { err: t(lang, 'gift_not_found') }
+  else if (card.expires_at && nowSec > card.expires_at) result = { err: t(lang, 'gift_card_expired') }
+  else if ((card.balance_cents || 0) <= 0) result = { err: t(lang, 'gift_card_empty') }
+  else result = {
+    balance: money(card.balance_cents, shop.currency),
+    expiry: card.expires_at ? formatBookingTime(card.expires_at, shop.timezone).split(',').slice(0, 2).join(',') : t(lang, 'gift_no_expiry'),
+  }
+  return giftPage(c, shop, lang, { title: t(lang, 'gift_check_title'), inner: giftCheckForm(shop, lang, result, (f.code || '').toString()) })
+})
+
+function giftCheckForm(shop, lang, result, code = '') {
+  return `
+    <h1 style="margin:.3em 0 .1em">🎁 ${esc(t(lang, 'gift_check_title'))}</h1>
+    <p class="muted" style="margin-top:0">${esc(t(lang, 'gift_check_sub'))}</p>
+    ${result && result.balance ? `<div class="card" style="padding:22px;text-align:center;margin:14px 0">
+      <div class="muted" style="font-size:.8rem;text-transform:uppercase;letter-spacing:.06em">${esc(t(lang, 'gift_balance_is', { amount: '' }))}</div>
+      <div style="font-size:2rem;font-weight:800;color:var(--accent)">${esc(result.balance)}</div>
+      <div class="muted" style="font-size:.85rem">${esc(t(lang, 'gift_expires_on', { date: result.expiry }))}</div>
+    </div>` : ''}
+    ${result && result.err ? `<div class="notice err" style="margin:14px 0">${esc(result.err)}</div>` : ''}
+    <form method="post" action="/${shop.slug}/gift/check" class="card" style="padding:22px">
+      <div class="field"><label>${esc(t(lang, 'gift_code_label'))}</label><input name="code" value="${esc(code)}" placeholder="XXX-XXXX-XXXX" required style="font-family:ui-monospace,monospace;letter-spacing:.05em"></div>
+      <button class="btn">${esc(t(lang, 'gift_check_btn'))}</button>
+    </form>`
+}
 
 // ─── Shop public page ────────────────────────────────────────────────────────
 app.get('/:slug', async (c) => {
@@ -230,6 +424,7 @@ app.get('/:slug', async (c) => {
       <h1 style="color:#fff;margin:.15em 0 .1em">${esc(shop.name)}</h1>
       ${shop.tagline ? `<p style="color:#d9ede9;margin:0 0 6px;font-size:1.05rem">${esc(shop.tagline)}</p>` : ''}
       <p style="color:#a7d3ce;margin:0;font-size:.9rem">${[addr, shop.phone].filter(Boolean).map(esc).join(' · ')}</p>
+      ${(shop.gift_cards_enabled && shop.stripe_charges_enabled) ? `<a href="/${shop.slug}/gift" style="display:inline-block;margin-top:14px;background:rgba(255,255,255,.16);color:#fff;text-decoration:none;font-weight:600;padding:9px 16px;border-radius:999px;font-size:.9rem">🎁 ${esc(t(lang, 'gift_buy_title'))}</a>` : ''}
     </div>
   </div>
 
