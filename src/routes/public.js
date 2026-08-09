@@ -176,6 +176,19 @@ app.get('/', async (c) => {
 const GIFT_PRESETS = [5000, 10000, 15000, 20000]  // cents
 const GIFT_MIN = 1000                              // $10 minimum
 
+// Gift cards are online-only (real shops must connect Stripe). The featured DEMO
+// shops are the exception: they showcase the flow with no Stripe and no real
+// charge — mirroring how demo bookings are taken without a deposit. We never let
+// a real shop issue free store credit from a public page (abuse vector).
+const isDemoShop = (slug) => DEMO_SLUGS.includes(slug)
+function giftSaleState(c, shop) {
+  const stripeReady = !!(c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled)
+  const isDemo = isDemoShop(shop.slug)
+  const canSell = !!shop.gift_cards_enabled && (stripeReady || isDemo)
+  const demoMode = !!shop.gift_cards_enabled && !stripeReady && isDemo
+  return { stripeReady, isDemo, canSell, demoMode }
+}
+
 function giftPage(c, shop, lang, { inner, title }) {
   const user = c.get('user')
   return c.html(layout(`${title} — ${shop.name}`, `
@@ -190,7 +203,7 @@ app.get('/:slug/gift', async (c) => {
   const db = c.env.DB, lang = c.get('lang')
   const shop = await getShopBySlug(db, c.req.param('slug'))
   if (!shop || !shop.is_published) return c.notFound()
-  const canSell = !!(shop.gift_cards_enabled && c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled)
+  const { canSell, demoMode } = giftSaleState(c, shop)
   const cur = shop.currency
   if (!canSell) {
     return giftPage(c, shop, lang, {
@@ -206,6 +219,7 @@ app.get('/:slug/gift', async (c) => {
   const inner = `
     <h1 style="margin:.3em 0 .1em">🎁 ${esc(t(lang, 'gift_buy_title'))}</h1>
     <p class="muted" style="margin-top:0">${esc(t(lang, 'gift_buy_sub', { shop: shop.name }))}</p>
+    ${demoMode ? `<div class="notice" style="margin:10px 0;background:#fdf7e8;color:#8a6414">🧪 ${esc(t(lang, 'gift_demo_note'))}</div>` : ''}
     ${err ? `<div class="notice err" style="margin:10px 0">${esc(decodeURIComponent(err).slice(0, 200))}</div>` : ''}
     <form method="post" action="/${shop.slug}/gift" class="card" style="padding:24px;margin-top:14px">
       <label style="font-weight:600;display:block;margin-bottom:8px">${esc(t(lang, 'gift_choose_amount'))}</label>
@@ -227,8 +241,8 @@ app.get('/:slug/gift', async (c) => {
         </div>
         <div class="field"><label>${esc(t(lang, 'gift_message'))}</label><textarea name="message" rows="2" maxlength="300" placeholder="${esc(t(lang, 'gift_message_ph'))}"></textarea></div>
       </details>
-      <button class="btn gold" style="width:100%">${esc(t(lang, 'gift_buy_btn'))}</button>
-      <p class="muted" style="font-size:.8rem;text-align:center;margin:12px 0 0">${esc(t(lang, 'gift_pay_note'))}</p>
+      <button class="btn gold" style="width:100%">${demoMode ? esc(t(lang, 'gift_demo_btn')) : esc(t(lang, 'gift_buy_btn'))}</button>
+      <p class="muted" style="font-size:.8rem;text-align:center;margin:12px 0 0">${demoMode ? esc(t(lang, 'gift_demo_note')) : esc(t(lang, 'gift_pay_note'))}</p>
     </form>
     <p style="text-align:center;margin-top:14px"><a class="muted" href="/${shop.slug}/gift/check">${esc(t(lang, 'gift_check_link'))} →</a></p>
     <style>
@@ -249,7 +263,7 @@ app.post('/:slug/gift', async (c) => {
   const db = c.env.DB, lang = c.get('lang')
   const shop = await getShopBySlug(db, c.req.param('slug'))
   if (!shop || !shop.is_published) return c.notFound()
-  const canSell = !!(shop.gift_cards_enabled && c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled)
+  const { canSell, demoMode } = giftSaleState(c, shop)
   const gerr = (m) => c.redirect(`/${shop.slug}/gift?err=${encodeURIComponent(m)}`)
   if (!canSell) return gerr(t(lang, 'gift_unavailable'))
 
@@ -272,6 +286,16 @@ app.post('/:slug/gift', async (c) => {
     (id, shop_id, code, initial_cents, balance_cents, currency, status, purchaser_name, purchaser_email, recipient_name, recipient_email, message, lang)
     VALUES (?, ?, ?, ?, ?, ?, 'pending_payment', ?, ?, ?, ?, ?, ?)`)
     .bind(id, shop.id, code, cents, cents, shop.currency, buyerName, buyerEmail, recipientName, recipientEmail, message, lang).run()
+
+  // Demo shops: no Stripe, no charge — activate the card immediately so visitors
+  // can see the full flow and the resulting code (nothing is emailed).
+  if (demoMode) {
+    const now = Math.floor(Date.now() / 1000)
+    const years = Math.max(3, shop.gift_card_expiry_years || 3)
+    await db.prepare("UPDATE gift_cards SET status='active', activated_at=?, expires_at=? WHERE id=?")
+      .bind(now, now + years * 365 * 24 * 3600, id).run()
+    return c.redirect(`/${shop.slug}/gift/success/${id}`)
+  }
 
   const base = c.env.BASE_URL || 'https://alisa.bored.investments'
   const fee = Math.max(0, Math.round(cents * 0.01))
@@ -305,12 +329,14 @@ app.get('/:slug/gift/success/:id', async (c) => {
   const card = await db.prepare('SELECT * FROM gift_cards WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
   if (!card) return c.notFound()
   const active = card.status === 'active' || card.status === 'redeemed'
+  const { demoMode } = giftSaleState(c, shop)
   const to = card.recipient_email || card.purchaser_email || ''
   const inner = `
     <div class="card" style="padding:30px;text-align:center;margin-top:16px">
       <div style="font-size:2.4rem">🎁</div>
       <h1 style="margin:.2em 0">${esc(t(lang, 'gift_success_head'))}</h1>
-      <p class="muted">${active ? esc(t(lang, 'gift_success_sub', { email: to, shop: shop.name })) : esc(t(lang, 'gift_success_pending'))}</p>
+      ${demoMode ? `<div class="notice" style="background:#fdf7e8;color:#8a6414;margin:0 0 12px">🧪 ${esc(t(lang, 'gift_demo_success'))}</div>` : ''}
+      <p class="muted">${demoMode ? esc(t(lang, 'gift_demo_code_below')) : (active ? esc(t(lang, 'gift_success_sub', { email: to, shop: shop.name })) : esc(t(lang, 'gift_success_pending')))}</p>
       ${active ? `<div style="border:2px dashed var(--accent);border-radius:14px;padding:18px;margin:16px auto 0;max-width:320px">
         <div class="muted" style="font-size:.75rem;text-transform:uppercase;letter-spacing:.08em">${esc(t(lang, 'gift_code'))}</div>
         <div style="font-family:ui-monospace,monospace;font-size:1.5rem;font-weight:700;letter-spacing:.05em">${esc(card.code)}</div>
@@ -424,7 +450,7 @@ app.get('/:slug', async (c) => {
       <h1 style="color:#fff;margin:.15em 0 .1em">${esc(shop.name)}</h1>
       ${shop.tagline ? `<p style="color:#d9ede9;margin:0 0 6px;font-size:1.05rem">${esc(shop.tagline)}</p>` : ''}
       <p style="color:#a7d3ce;margin:0;font-size:.9rem">${[addr, shop.phone].filter(Boolean).map(esc).join(' · ')}</p>
-      ${(shop.gift_cards_enabled && shop.stripe_charges_enabled) ? `<a href="/${shop.slug}/gift" style="display:inline-block;margin-top:14px;background:rgba(255,255,255,.16);color:#fff;text-decoration:none;font-weight:600;padding:9px 16px;border-radius:999px;font-size:.9rem">🎁 ${esc(t(lang, 'gift_buy_title'))}</a>` : ''}
+      ${(shop.gift_cards_enabled && (shop.stripe_charges_enabled || isDemoShop(shop.slug))) ? `<a href="/${shop.slug}/gift" style="display:inline-block;margin-top:14px;background:rgba(255,255,255,.16);color:#fff;text-decoration:none;font-weight:600;padding:9px 16px;border-radius:999px;font-size:.9rem">🎁 ${esc(t(lang, 'gift_buy_title'))}</a>` : ''}
     </div>
   </div>
 

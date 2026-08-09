@@ -63,6 +63,8 @@ const DICT = {
     gift_buy_btn: 'Continue to payment →', gift_min: 'Minimum {amount}.',
     gift_unavailable: 'Gift cards aren’t available for this shop yet.',
     gift_pay_note: 'Secure payment by card. Your gift card and code arrive by email the moment payment clears.',
+    gift_demo_note: 'Demo mode — no real payment is taken. Submit to see the gift card and code you’d receive.',
+    gift_demo_btn: 'Create demo gift card →', gift_demo_success: 'Demo only — no payment was taken and no email was sent.', gift_demo_code_below: 'Here’s the gift card you’d receive. In a real shop it’s emailed to the buyer and recipient.',
     // Gift cards — success + balance check
     gift_success_head: 'Gift card on its way! 🎁', gift_success_sub: 'We’ve emailed the gift card to {email}. It can be redeemed at {shop}.',
     gift_success_pending: 'Finalising your payment — the gift card email will arrive within a minute.',
