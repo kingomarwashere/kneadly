@@ -56,9 +56,15 @@ app.post('/stripe', async (c) => {
     const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first()
     if (!booking) return c.json({ ok: true })
 
-    // A "take payment" QR/link session (not a deposit) — just record the amount.
+    // A "take payment" QR/link session (not a deposit) — record it in the ledger
+    // (method: card) and keep the paid_cents aggregate in sync.
     if (session.metadata?.kind === 'balance') {
-      await db.prepare('UPDATE bookings SET paid_cents = COALESCE(paid_cents,0) + ? WHERE id=?').bind(session.amount_total || 0, bookingId).run()
+      const amt = session.amount_total || 0
+      if (amt > 0) {
+        await db.prepare('INSERT INTO payments (id, shop_id, booking_id, amount_cents, method, note) VALUES (?,?,?,?,?,?)')
+          .bind(crypto.randomUUID().replace(/-/g, ''), booking.shop_id, bookingId, amt, 'card', 'Paid by QR (card/Apple/Google Pay)').run()
+        await db.prepare('UPDATE bookings SET paid_cents = COALESCE(paid_cents,0) + ? WHERE id=?').bind(amt, bookingId).run()
+      }
       return c.json({ ok: true })
     }
 

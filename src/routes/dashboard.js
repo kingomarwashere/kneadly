@@ -105,6 +105,7 @@ app.get('/', async (c) => {
       (SELECT COUNT(*) FROM bookings WHERE shop_id=?1 AND ${upcomingWhere}) AS upcoming,
       (SELECT COUNT(*) FROM bookings WHERE shop_id=?1 AND status='completed') AS done,
       (SELECT COALESCE(SUM(deposit_cents),0) FROM bookings WHERE shop_id=?1 AND status IN ('confirmed','completed')) AS deposits,
+      (SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE shop_id=?1) AS payments,
       (SELECT COUNT(*) FROM services WHERE shop_id=?1 AND is_active=1) AS services,
       (SELECT COUNT(*) FROM staff WHERE shop_id=?1 AND is_active=1) AS staff`).bind(shop.id).first()
 
@@ -124,10 +125,14 @@ app.get('/', async (c) => {
       <p class="muted" style="margin:12px 0 0;font-size:.9rem">📍 <strong>Get bookings from Google Maps:</strong> in your <a href="https://business.google.com" target="_blank">Google Business Profile</a> → <strong>Edit profile → Booking / Appointment links</strong>, paste this link. Customers will see a <strong>“Book”</strong> button on your Maps listing.</p>
     </div>
 
-    <div class="grid g3" style="margin-bottom:20px">
+    <div class="grid g3" style="margin-bottom:12px">
       <div class="card" style="padding:18px"><div class="muted">Upcoming</div><div class="stat">${counts.upcoming}</div></div>
       <div class="card" style="padding:18px"><div class="muted">Completed</div><div class="stat">${counts.done}</div></div>
       <div class="card" style="padding:18px"><div class="muted">Deposits collected</div><div class="stat">${money(counts.deposits, shop.currency)}</div></div>
+    </div>
+    <div class="grid g2" style="margin-bottom:20px">
+      <div class="card" style="padding:18px"><div class="muted">Payments taken (cash & card in person)</div><div class="stat">${money(counts.payments, shop.currency)}</div></div>
+      <div class="card" style="padding:18px"><div class="muted">Total collected</div><div class="stat">${money((counts.deposits || 0) + (counts.payments || 0), shop.currency)}</div></div>
     </div>
 
     ${setup ? `<div class="card" style="padding:20px;margin-bottom:20px;border-color:var(--gold)">
@@ -432,13 +437,13 @@ app.get('/bookings', async (c) => {
   return shell(c, 'bookings', 'Bookings', `
     <div class="inline" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:6px 0 4px;margin-bottom:8px"><h2 style="margin:0">Bookings</h2><div class="inline" style="gap:8px;flex-wrap:wrap;row-gap:8px"><a class="btn sm" href="/dashboard/bookings/new">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new">👥 Group</a>${tabs}</div></div>
     ${rows.length ? `<div class="card" style="padding:6px 18px"><table>
-      <tr><th>When</th><th>Client</th><th>Service</th><th>Therapist</th><th>Deposit</th><th>Status</th><th></th></tr>
-      ${rows.map(b => `<tr>
+      <tr><th>When</th><th>Client</th><th>Service</th><th>Therapist</th><th>Paid</th><th>Status</th><th></th></tr>
+      ${rows.map(b => { const col = collectedCents(b), price = b.price_cents || 0; return `<tr>
         <td>${formatBookingTime(b.start_time, shop.timezone)}</td>
         <td>${esc(b.customer_name)}<div class="muted" style="font-size:.8rem">${esc(b.customer_email)}${b.customer_phone ? ' · ' + esc(b.customer_phone) : ''}</div>${b.notes ? `<div class="muted" style="font-size:.8rem">📝 ${esc(b.notes)}</div>` : ''}</td>
         <td>${esc(b.service_name)}</td>
         <td>${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</td>
-        <td>${b.deposit_cents ? money(b.deposit_cents, shop.currency) : '—'}${b.refunded_at ? '<div class="muted" style="font-size:.75rem">refunded</div>' : ''}</td>
+        <td>${price > 0 && col >= price ? '<span class="tag completed">Paid ✓</span>' : (col > 0 ? `${money(col, shop.currency)}<div class="muted" style="font-size:.75rem">of ${money(price, shop.currency)}</div>` : '—')}${b.refunded_at ? '<div class="muted" style="font-size:.75rem">deposit refunded</div>' : ''}</td>
         <td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td>
         <td><div class="inline">
           ${['confirmed', 'pending_payment', 'completed'].includes(b.status) ? `<a class="btn gold sm" href="/dashboard/bookings/${b.id}/pay">💳 Pay</a>` : ''}
@@ -449,7 +454,7 @@ app.get('/bookings', async (c) => {
             <form method="post" action="/dashboard/bookings/${b.id}/cancel" onsubmit="return confirm('Cancel${b.deposit_cents && b.stripe_charge_id ? ' and refund the deposit' : ''}?')"><button class="btn danger sm">Cancel</button></form>
           ` : ''}
         </div></td>
-      </tr>`).join('')}
+      </tr>` }).join('')}
     </table></div>` : '<p class="muted">Nothing here yet.</p>'}
   `)
 })
@@ -805,15 +810,15 @@ app.get('/bookings/:id/edit', async (c) => {
       </div>
       <h4 style="margin:0 0 6px">Payment &amp; service history</h4>
       ${hist.length ? `<div class="card" style="padding:6px 16px;max-height:440px;overflow:auto"><table>
-        <tr><th>When</th><th>Service</th><th>Price</th><th>Deposit</th><th>Status</th><th>Notes</th></tr>
-        ${hist.map(h => `<tr${h.id === b.id ? ' style="background:#f4faf8"' : ''}>
+        <tr><th>When</th><th>Service</th><th>Price</th><th>Paid</th><th>Status</th><th>Notes</th></tr>
+        ${hist.map(h => { const col = collectedCents(h), price = h.price_cents || 0; return `<tr${h.id === b.id ? ' style="background:#f4faf8"' : ''}>
           <td>${esc(formatBookingTime(h.start_time, shop.timezone))}</td>
           <td>${h.requested_staff ? '❤️ ' : ''}${esc(h.service_name || '')}</td>
-          <td>${money(h.price_cents, shop.currency)}</td>
-          <td>${h.deposit_cents ? money(h.deposit_cents, shop.currency) : '—'}${h.refunded_at ? ' <span class="muted" style="font-size:.7rem">(refunded)</span>' : ''}</td>
+          <td>${money(price, shop.currency)}</td>
+          <td>${price > 0 && col >= price ? '✓' : (col > 0 ? money(col, shop.currency) : '—')}${h.refunded_at ? ' <span class="muted" style="font-size:.7rem">(refunded)</span>' : ''}</td>
           <td><span class="tag ${h.status}">${h.status.replace('_', ' ')}</span></td>
           <td class="muted" style="font-size:.82rem;max-width:220px;white-space:pre-wrap">${h.notes ? esc(h.notes) : '—'}</td>
-        </tr>`).join('')}
+        </tr>` }).join('')}
       </table></div>` : '<p class="muted">No history yet.</p>'}
     </div>`
 
@@ -821,9 +826,10 @@ app.get('/bookings/:id/edit', async (c) => {
     <a href="/dashboard/roster" class="muted">← Back to roster</a>
     <h2>Edit / reschedule booking</h2>
     ${c.req.query('err') === 'busy' ? '<div class="notice err" style="max-width:580px;margin-bottom:10px">⚠️ That therapist is already booked over that time — pick another time or therapist.</div>' : ''}
-    <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span>${b.loyalty_applied > 0 ? ` · 🎁 <strong>${money(b.loyalty_applied, shop.currency)} loyalty reward applied</strong>` : ''}${b.group_id ? ` · 👥 <strong>Group booking</strong>${b.room ? ` (${esc(b.room)})` : ''}` : ''}</p>
+    <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span>${b.loyalty_applied > 0 ? ` · 🎁 <strong>${money(b.loyalty_applied, shop.currency)} loyalty reward applied</strong>` : ''}${b.gift_applied > 0 ? ` · 🎁 <strong>${money(b.gift_applied, shop.currency)} gift card applied</strong>` : ''}${b.group_id ? ` · 👥 <strong>Group booking</strong>${b.room ? ` (${esc(b.room)})` : ''}` : ''}</p>
+    ${(() => { const col = collectedCents(b), price = b.price_cents || 0; return `<p style="margin-top:-2px;font-size:.9rem">💰 ${price > 0 && col >= price ? '<span class="tag completed">Paid in full ✓</span>' : `<strong>${money(col, shop.currency)}</strong> collected of <strong>${money(price, shop.currency)}</strong>${col < price ? ` · <span class="muted">${money(price - col, shop.currency)} remaining</span>` : ''}`}</p>` })()}
     ${['confirmed', 'pending_payment', 'completed'].includes(b.status) ? `<div class="inline" style="gap:8px;margin:0 0 14px;flex-wrap:wrap">
-      <a class="btn sm gold" href="/dashboard/bookings/${b.id}/pay">💳 Take payment</a>
+      <a class="btn sm gold" href="/dashboard/bookings/${b.id}/pay">💳 Payments — record cash / take card</a>
       ${['confirmed', 'pending_payment'].includes(b.status) ? `<form method="post" action="/dashboard/bookings/${b.id}/complete"><button class="btn sm">✓ Mark done</button></form>
       <form method="post" action="/dashboard/bookings/${b.id}/no_show"><button class="btn ghost sm">No-show</button></form>
       <form method="post" action="/dashboard/bookings/${b.id}/cancel" onsubmit="return confirm('${b.group_id ? 'Cancel the whole group booking' : 'Cancel this booking'}${b.stripe_charge_id ? ' and refund the deposit' : ''}?')"><button class="btn danger sm">✕ Cancel booking</button></form>` : ''}
@@ -859,41 +865,105 @@ app.post('/bookings/:id/edit', async (c) => {
   return c.redirect(`/dashboard/roster?week=${rosterWeekOf(r.date)}`)
 })
 
-// ─── Take payment: QR / link the customer scans to pay (card / Apple / Google) ─
-// What's already been collected for a booking (paid deposit + any QR payments).
+// ─── Take payment: cash in person, or a Stripe QR the customer scans ──────────
+// What's already been collected for a booking (paid deposit + any recorded payments).
 const collectedCents = (b) => ((b.stripe_charge_id && !b.refunded_at) ? (b.deposit_cents || 0) : 0) + (b.paid_cents || 0)
+const PAY_METHODS = { cash: '💵 Cash', card: '💳 Card', transfer: '🏦 Bank transfer', other: '• Other' }
+const paymentsFor = (db, bookingId) => db.prepare('SELECT * FROM payments WHERE booking_id=? ORDER BY created_at').bind(bookingId).all().then(r => r.results || [])
+
+// Record a payment against a booking + keep the paid_cents aggregate in sync.
+async function recordPayment(db, shop, bookingId, amountCents, method, note) {
+  const m = PAY_METHODS[method] ? method : 'cash'
+  await db.prepare('INSERT INTO payments (id, shop_id, booking_id, amount_cents, method, note) VALUES (?,?,?,?,?,?)')
+    .bind(genId(), shop.id, bookingId, amountCents, m, (note || '').toString().slice(0, 200) || null).run()
+  await db.prepare('UPDATE bookings SET paid_cents = COALESCE(paid_cents,0) + ? WHERE id=?').bind(amountCents, bookingId).run()
+}
 
 app.get('/bookings/:id/pay', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
   const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
   if (!b) return c.redirect('/dashboard/bookings')
   const connected = c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled
-  const paid = collectedCents(b), remaining = Math.max(0, (b.price_cents || 0) - paid)
   const cur = shop.currency
-  if (!connected) {
-    return shell(c, 'bookings', 'Take payment', `
-      <a href="/dashboard/bookings/${b.id}/edit" class="muted">← Back to booking</a>
-      <h2>💳 Take payment</h2>
-      <div class="notice err">Connect your Stripe account first (Settings → 💳 Payments) to take card payments. Until then you can only record cash on the <a href="/dashboard/day-sheet">day sheet</a>.</div>`)
-  }
+  const depositPaid = (b.stripe_charge_id && !b.refunded_at) ? (b.deposit_cents || 0) : 0
+  const pays = await paymentsFor(db, b.id)
+  const paid = collectedCents(b), remaining = Math.max(0, (b.price_cents || 0) - paid)
+  const saved = c.req.query('saved')
+
+  // Collected breakdown: the online deposit (if charged) + each recorded payment.
+  const collectedRows = [
+    ...(depositPaid ? [`<tr><td class="muted">💳 Deposit (online)</td><td style="text-align:right">${money(depositPaid, cur)}</td><td></td></tr>`] : []),
+    ...pays.map(p => `<tr>
+      <td class="muted">${PAY_METHODS[p.method] || p.method}${p.note ? ` <span style="font-size:.8em">— ${esc(p.note)}</span>` : ''} <span style="font-size:.75em;color:var(--muted)">· ${esc(formatBookingTime(p.created_at, shop.timezone).split(',').slice(1).join(',').trim())}</span></td>
+      <td style="text-align:right">${money(p.amount_cents, cur)}</td>
+      <td style="text-align:right"><form method="post" action="/dashboard/bookings/${b.id}/pay/${p.id}/delete" onsubmit="return confirm('Remove this ${money(p.amount_cents, cur)} payment?')" style="display:inline"><button class="btn ghost sm" style="padding:3px 8px" title="Remove">✕</button></form></td>
+    </tr>`),
+  ].join('')
+
   return shell(c, 'bookings', 'Take payment', `
     <a href="/dashboard/bookings/${b.id}/edit" class="muted">← Back to booking</a>
     <h2>💳 Take payment</h2>
+    ${saved ? '<div class="notice ok" style="max-width:460px">Payment recorded ✓</div>' : ''}
     <div class="card" style="padding:20px;max-width:460px">
       <div class="muted" style="margin-bottom:4px">${esc(b.customer_name)} · ${esc(b.service_name || '')}</div>
       <div class="muted" style="font-size:.85rem;margin-bottom:14px">${formatBookingTime(b.start_time, shop.timezone)}</div>
-      <table style="width:100%;font-size:.9rem;margin-bottom:14px">
-        <tr><td class="muted">Price</td><td style="text-align:right">${money(b.price_cents || 0, cur)}</td></tr>
-        ${paid ? `<tr><td class="muted">Already paid</td><td style="text-align:right">− ${money(paid, cur)}</td></tr>` : ''}
-        <tr><td style="font-weight:600;padding-top:6px">Remaining</td><td style="text-align:right;font-weight:600;padding-top:6px">${money(remaining, cur)}</td></tr>
+      <table style="width:100%;font-size:.9rem;margin-bottom:8px">
+        <tr><td class="muted">Price</td><td style="text-align:right" colspan="2">${money(b.price_cents || 0, cur)}</td></tr>
+        ${collectedRows}
+        <tr><td style="font-weight:700;padding-top:8px;border-top:1px solid var(--line)">${remaining > 0 ? 'Remaining' : 'Status'}</td><td style="text-align:right;font-weight:700;padding-top:8px;border-top:1px solid var(--line)" colspan="2">${remaining > 0 ? money(remaining, cur) : '<span class="tag completed">Paid in full ✓</span>'}</td></tr>
       </table>
-      <form method="post" action="/dashboard/bookings/${b.id}/pay">
-        <div class="field"><label>Amount to charge (${cur.toUpperCase()})</label>
-          <input type="number" name="amount" min="1" step="0.01" value="${((remaining || b.price_cents || 0) / 100).toFixed(2)}" required style="max-width:180px"></div>
-        <button class="btn">Generate payment QR →</button>
+    </div>
+
+    <div class="card" style="padding:20px;max-width:460px;margin-top:16px">
+      <h3 style="margin-top:0">💵 Record a payment</h3>
+      <p class="muted" style="font-size:.85rem;margin-top:0">Someone paid in person? Record it here — cash, an external card machine, or a bank transfer.</p>
+      <form method="post" action="/dashboard/bookings/${b.id}/pay/record">
+        <div class="row">
+          <div class="field" style="flex:0 0 150px"><label>Amount (${cur.toUpperCase()})</label>
+            <input type="number" name="amount" min="0.01" step="0.01" value="${(((remaining || b.price_cents) || 0) / 100).toFixed(2)}" required></div>
+          <div class="field"><label>Method</label><select name="method">
+            ${Object.entries(PAY_METHODS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+          </select></div>
+        </div>
+        <div class="field"><label>Note <span class="muted">(optional)</span></label><input name="note" placeholder="e.g. Tip included, paid at front desk"></div>
+        <button class="btn">Record payment</button>
       </form>
-      <p class="muted" style="font-size:.8rem;margin:12px 0 0">The customer scans the QR (or you text them the link) and pays by card, Apple Pay or Google Pay. Alisa keeps a 1% fee; the rest goes to your Stripe.</p>
-    </div>`)
+    </div>
+
+    ${connected ? `<div class="card" style="padding:20px;max-width:460px;margin-top:16px">
+      <h3 style="margin-top:0">💳 Or take a card payment (QR)</h3>
+      <p class="muted" style="font-size:.85rem;margin-top:0">The customer scans a QR and pays by card, Apple Pay or Google Pay. Alisa keeps a 1% fee; the rest goes to your Stripe. Recorded automatically once paid.</p>
+      <form method="post" action="/dashboard/bookings/${b.id}/pay">
+        <div class="field" style="flex:0 0 180px"><label>Amount to charge (${cur.toUpperCase()})</label>
+          <input type="number" name="amount" min="1" step="0.01" value="${((remaining || b.price_cents || 0) / 100).toFixed(2)}" required style="max-width:180px"></div>
+        <button class="btn ghost">Generate payment QR →</button>
+      </form>
+    </div>` : `<p class="muted" style="max-width:460px;margin-top:14px;font-size:.85rem">Want customers to pay by card/Apple Pay from their phone? <a href="/dashboard/settings">Connect Stripe</a> to add a scan-to-pay QR — cash recording works either way.</p>`}
+  `)
+})
+
+// Record a manual (cash / external card / transfer / other) payment.
+app.post('/bookings/:id/pay/record', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
+  const b = await db.prepare('SELECT id FROM bookings WHERE id=? AND shop_id=?').bind(id, shop.id).first()
+  if (!b) return c.redirect('/dashboard/bookings')
+  const f = await c.req.parseBody()
+  const amount = Math.round(parseFloat((f.amount || '').toString()) * 100)
+  if (Number.isFinite(amount) && amount > 0) {
+    await recordPayment(db, shop, id, amount, (f.method || 'cash').toString(), (f.note || '').toString())
+  }
+  return c.redirect(`/dashboard/bookings/${id}/pay?saved=1`)
+})
+
+// Undo a recorded payment (mistake / refunded in person).
+app.post('/bookings/:id/pay/:pid/delete', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
+  const p = await db.prepare('SELECT * FROM payments WHERE id=? AND shop_id=? AND booking_id=?').bind(c.req.param('pid'), shop.id, id).first()
+  if (p) {
+    await db.prepare('DELETE FROM payments WHERE id=?').bind(p.id).run()
+    await db.prepare('UPDATE bookings SET paid_cents = MAX(0, COALESCE(paid_cents,0) - ?) WHERE id=?').bind(p.amount_cents, id).run()
+  }
+  return c.redirect(`/dashboard/bookings/${id}/pay`)
 })
 
 app.post('/bookings/:id/pay', async (c) => {
@@ -1628,6 +1698,7 @@ app.get('/settings', async (c) => {
       <div class="inline" style="gap:8px;flex-wrap:wrap">
         <a class="btn ghost sm" href="/dashboard/export/clients.csv">👤 Clients (CSV)</a>
         <a class="btn ghost sm" href="/dashboard/export/bookings.csv">🗓️ Bookings (CSV)</a>
+        <a class="btn ghost sm" href="/dashboard/export/payments.csv">💵 Payments (CSV)</a>
         <a class="btn ghost sm" href="/dashboard/export/reviews.csv">⭐ Reviews (CSV)</a>
         <a class="btn ghost sm" href="/dashboard/export/gift-cards.csv">🎁 Gift cards (CSV)</a>
         <a class="btn sm" href="/dashboard/export/all.json">⬇️ Everything (JSON)</a>
@@ -1909,8 +1980,8 @@ app.get('/clients/:id', async (c) => {
       <div>
         <h3>Booking history</h3>
         ${history.length ? `<div class="card" style="padding:6px 18px"><table>
-          <tr><th>When</th><th>Service</th><th>Therapist</th><th>Status</th><th>Notes</th></tr>
-          ${history.map(b => `<tr><td>${esc(formatBookingTime(b.start_time, shop.timezone))}</td><td>${esc(b.service_name || '')}</td><td>${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</td><td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td><td class="muted" style="font-size:.82rem;max-width:220px;white-space:pre-wrap">${b.notes ? esc(b.notes) : '—'}</td></tr>`).join('')}
+          <tr><th>When</th><th>Service</th><th>Therapist</th><th>Paid</th><th>Status</th><th>Notes</th></tr>
+          ${history.map(b => { const col = collectedCents(b), price = b.price_cents || 0; return `<tr><td>${esc(formatBookingTime(b.start_time, shop.timezone))}</td><td>${esc(b.service_name || '')}</td><td>${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</td><td>${price > 0 && col >= price ? '✓' : (col > 0 ? money(col, shop.currency) : '—')}</td><td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td><td class="muted" style="font-size:.82rem;max-width:220px;white-space:pre-wrap">${b.notes ? esc(b.notes) : '—'}</td></tr>` }).join('')}
         </table></div>` : '<p class="muted">No bookings yet.</p>'}
       </div>
     </div>
@@ -2056,17 +2127,38 @@ app.get('/export/clients.csv', async (c) => {
 app.get('/export/bookings.csv', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
   const rows = (await db.prepare('SELECT * FROM bookings WHERE shop_id=? ORDER BY start_time DESC').bind(shop.id).all()).results || []
+  // Payment methods per booking (grouped once, not per-row).
+  const pays = (await db.prepare('SELECT booking_id, method, amount_cents FROM payments WHERE shop_id=?').bind(shop.id).all()).results || []
+  const methodsByBk = {}
+  for (const p of pays) { (methodsByBk[p.booking_id] ||= new Set()).add(PAY_METHODS[p.method] ? p.method : 'other') }
   const cur = shop.currency
   const csv = toCsv(
-    ['When', 'Status', 'Service', 'Therapist', 'Customer', 'Email', 'Phone', 'Price', 'Deposit', 'Refunded', 'Requested therapist', 'Group', 'Notes'],
+    ['When', 'Status', 'Service', 'Therapist', 'Customer', 'Email', 'Phone', 'Price', 'Deposit', 'Gift applied', 'Collected', 'Payment methods', 'Refunded', 'Requested therapist', 'Group', 'Notes'],
     rows.map(b => [
       formatBookingTime(b.start_time, shop.timezone), b.status, b.service_name, b.staff_name,
       b.customer_name, b.customer_email, b.customer_phone,
       b.price_cents != null ? money(b.price_cents, cur) : '', b.deposit_cents ? money(b.deposit_cents, cur) : '',
+      b.gift_applied ? money(b.gift_applied, cur) : '', money(collectedCents(b), cur),
+      [...(methodsByBk[b.id] || [])].join(' + '),
       b.refunded_at ? 'yes' : '', b.requested_staff ? 'yes' : '', b.group_id || '', b.notes,
     ])
   )
   return csvResponse(c, `${shop.slug}-bookings.csv`, csv)
+})
+
+app.get('/export/payments.csv', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const rows = (await db.prepare(`SELECT p.*, b.customer_name, b.service_name, b.start_time
+    FROM payments p JOIN bookings b ON b.id=p.booking_id WHERE p.shop_id=? ORDER BY p.created_at DESC`).bind(shop.id).all()).results || []
+  const cur = shop.currency
+  const csv = toCsv(
+    ['Recorded', 'Amount', 'Method', 'Customer', 'Service', 'Appointment', 'Note'],
+    rows.map(p => [
+      formatBookingTime(p.created_at, shop.timezone), money(p.amount_cents, cur), p.method,
+      p.customer_name, p.service_name, formatBookingTime(p.start_time, shop.timezone), p.note,
+    ])
+  )
+  return csvResponse(c, `${shop.slug}-payments.csv`, csv)
 })
 
 app.get('/export/reviews.csv', async (c) => {
@@ -2106,6 +2198,7 @@ app.get('/export/all.json', async (c) => {
     loyalty_tiers: await grab('SELECT * FROM loyalty_tiers WHERE shop_id=?'),
     gift_cards: await grab('SELECT * FROM gift_cards WHERE shop_id=? ORDER BY created_at DESC'),
     gift_card_txns: (await db.prepare('SELECT tx.* FROM gift_card_txns tx JOIN gift_cards g ON g.id=tx.gift_card_id WHERE g.shop_id=? ORDER BY tx.created_at DESC').bind(shop.id).all()).results || [],
+    payments: await grab('SELECT * FROM payments WHERE shop_id=? ORDER BY created_at DESC'),
   }
   return c.body(JSON.stringify(dump, null, 2), 200, {
     'Content-Type': 'application/json; charset=utf-8',

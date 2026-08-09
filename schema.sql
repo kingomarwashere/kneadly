@@ -251,6 +251,22 @@ CREATE TABLE IF NOT EXISTS gift_card_txns (
 );
 CREATE INDEX IF NOT EXISTS idx_gctxn_card ON gift_card_txns(gift_card_id, created_at);
 
+-- Payments collected against a booking (in addition to any online deposit):
+-- cash in person, an external card machine, bank transfer, or Alisa's Stripe QR.
+CREATE TABLE IF NOT EXISTS payments (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  booking_id TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  method TEXT NOT NULL DEFAULT 'cash',   -- cash | card | transfer | other
+  note TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,
+  FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_payments_booking ON payments(booking_id);
+CREATE INDEX IF NOT EXISTS idx_payments_shop ON payments(shop_id, created_at);
+
 -- Days a therapist is off (holidays, sick days) — blocks that whole date
 CREATE TABLE IF NOT EXISTS time_off (
   id TEXT PRIMARY KEY,
