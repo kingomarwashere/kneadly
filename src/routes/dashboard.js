@@ -1201,6 +1201,21 @@ app.get('/day-sheet', async (c) => {
   const bookings = (await db.prepare("SELECT * FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? AND status!='cancelled' ORDER BY start_time")
     .bind(shop.id, dayStartU, dayStartU + 86400).all()).results || []
 
+  // Prefill the CS/CR/TF columns from payments recorded against each booking:
+  // cash (+ "other") → CS, card → CR, bank transfer → TF. (The online deposit is
+  // NOT included — it wasn't collected at the till today.) Owners can still edit.
+  const payByBk = {}
+  if (bookings.length) {
+    const ph = bookings.map(() => '?').join(',')
+    const prows = (await db.prepare(`SELECT booking_id, method, amount_cents FROM payments WHERE booking_id IN (${ph})`).bind(...bookings.map(b => b.id)).all()).results || []
+    for (const p of prows) {
+      const m = payByBk[p.booking_id] || (payByBk[p.booking_id] = { cs: 0, cr: 0, tf: 0 })
+      if (p.method === 'card') m.cr += p.amount_cents
+      else if (p.method === 'transfer') m.tf += p.amount_cents
+      else m.cs += p.amount_cents   // cash + other → cash column
+    }
+  }
+
   // Therapist columns (pad to at least 4 blanks; cap at 6 to fit the page).
   let cols = staff.slice(0, 6).map(s => ({ id: s.id, name: s.name }))
   while (cols.length < 4) cols.push({ id: null, name: '' })
@@ -1235,13 +1250,14 @@ app.get('/day-sheet', async (c) => {
   const rowsHtml = Array.from({ length: ROWS }, (_, i) => {
     const b = bookings[i]
     const ci = b ? cols.findIndex(cc => cc.id === b.staff_id) : -1
+    const pm = (b && payByBk[b.id]) || { cs: 0, cr: 0, tf: 0 }
     const staffCells = cols.map((cc, j) => `<td class="${b && j === ci ? 'assigned' : ''}">${cell(`r${i}_s${j}`, '', { ph: b && j === ci ? (cc.name || '').slice(0, 1).toUpperCase() : '' })}</td>`).join('')
     return `<tr>
       <td class="job">${i + 1}</td>
       <td>${cell(`r${i}_time`, b ? `${clk(b.start_time)}–${clk(b.end_time)}` : '', { num: false })}</td>
       <td>${cell(`r${i}_svc`, b ? `${b.service_name || ''} · ${durLabel(b.start_time, b.end_time)}` : '', { num: false })}</td>
       <td>${cell(`r${i}_full`, b ? amt(b.price_cents) : '')}</td>
-      <td>${cell(`r${i}_cs`)}</td><td>${cell(`r${i}_cr`)}</td><td>${cell(`r${i}_tf`)}</td>
+      <td>${cell(`r${i}_cs`, pm.cs ? amt(pm.cs) : '')}</td><td>${cell(`r${i}_cr`, pm.cr ? amt(pm.cr) : '')}</td><td>${cell(`r${i}_tf`, pm.tf ? amt(pm.tf) : '')}</td>
       ${staffCells}
       <td>${cell(`r${i}_rem`, '', { num: false })}</td>
     </tr>`
@@ -1306,7 +1322,7 @@ app.get('/day-sheet', async (c) => {
       <span id="savestatus"></span>
       <form method="post" action="/dashboard/day-sheet/reset" style="margin:0" onsubmit="return confirm('Clear your saved entries for this day and reload from the calendar?')"><input type="hidden" name="date" value="${date}"><button class="btn ghost sm" type="submit" style="color:var(--danger)">↻ Reset</button></form>
     </div>
-    <p class="bar noprint muted" style="margin-top:2px;font-size:.82rem;padding-top:0">Type in any cell — cash (CS), card (CR), transfers (TF), staff pay, change. Grey cells total automatically. Edits save as you type.</p>
+    <p class="bar noprint muted" style="margin-top:2px;font-size:.82rem;padding-top:0">Payments you record on a booking are filled into CS (cash), CR (card) and TF (transfer) automatically — edit any cell to override. Grey cells total automatically. Edits save as you type.</p>
     <div class="sheet">
       <div class="shead">
         <div class="nm">${esc(shop.emoji || '')} ${esc(shop.name.toUpperCase())}</div>
