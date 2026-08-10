@@ -437,7 +437,19 @@ app.get('/bookings', async (c) => {
   const tabs = ['upcoming', 'past', 'all'].map(f =>
     `<a href="/dashboard/bookings?f=${f}" class="btn ${filter === f ? '' : 'ghost'} sm">${f[0].toUpperCase() + f.slice(1)}</a>`).join(' ')
 
+  const wl = shop.waitlist_enabled ? (await db.prepare("SELECT * FROM waitlist WHERE shop_id=? AND status IN ('waiting','notified') ORDER BY created_at DESC LIMIT 50").bind(shop.id).all()).results || [] : []
+  const wlCard = wl.length ? `<div class="card" style="padding:16px 18px;margin-bottom:14px">
+    <h3 style="margin:0 0 8px">📝 Waitlist <span class="muted" style="font-weight:400;font-size:.85rem">(${wl.length})</span></h3>
+    <div style="overflow-x:auto"><table><tr><th>Client</th><th>Wants</th><th>Status</th><th></th></tr>
+    ${wl.map(w => `<tr>
+      <td>${esc(w.name)}<div class="muted" style="font-size:.78rem">${[w.email, w.phone].filter(Boolean).map(esc).join(' · ')}</div></td>
+      <td class="muted" style="font-size:.85rem">${[w.date || 'any day', w.service_id ? '' : 'any service'].filter(Boolean).join(' · ')}</td>
+      <td>${w.status === 'notified' ? '<span class="tag pending_payment">notified</span>' : '<span class="tag confirmed">waiting</span>'}</td>
+      <td><form method="post" action="/dashboard/waitlist/${w.id}/remove" style="display:inline"><button class="btn ghost sm">Remove</button></form></td>
+    </tr>`).join('')}</table></div></div>` : ''
+
   return shell(c, 'bookings', 'Bookings', `
+    ${wlCard}
     <div class="inline" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:6px 0 4px;margin-bottom:8px"><h2 style="margin:0">Bookings</h2><div class="inline" style="gap:8px;flex-wrap:wrap;row-gap:8px"><a class="btn sm" href="/dashboard/bookings/new">➕ Add booking</a><a class="btn ghost sm" href="/dashboard/bookings/group/new">👥 Group</a>${tabs}</div></div>
     ${rows.length ? `<div class="card" style="padding:6px 18px"><table>
       <tr><th>When</th><th>Client</th><th>Service</th><th>Therapist</th><th>Paid</th><th>Status</th><th></th></tr>
@@ -474,7 +486,16 @@ async function bookingAction(c, action) {
     const p = sendReviewRequest(c.env, id)
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(p); else await p
   }
-  if (action === 'no_show') await db.prepare("UPDATE bookings SET status='no_show' WHERE id=?").bind(id).run()
+  if (action === 'no_show') {
+    // Record a no-show fee if the shop charges one (deposit already kept — not refunded).
+    let fee = 0
+    if (shop.no_show_fee_enabled) {
+      fee = shop.no_show_fee_type === 'percent'
+        ? Math.round((b.price_cents || 0) * (shop.no_show_fee_value || 0) / 100)
+        : (shop.no_show_fee_value || 0)
+    }
+    await db.prepare("UPDATE bookings SET status='no_show', no_show_fee_cents=? WHERE id=?").bind(fee, id).run()
+  }
   if (action === 'cancel') {
     // A group booking cancels as one: cancel every member, refund the single
     // group deposit once, restore each person's loyalty, and email each guest.
@@ -501,9 +522,38 @@ async function bookingAction(c, action) {
     }
     const emailP = Promise.all(emailIds.map(eid => sendCancellationEmail(c.env, eid)))
     if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(emailP); else await emailP
+    // A slot just opened — notify anyone on the waitlist for that day/service.
+    if (shop.waitlist_enabled) {
+      const wp = notifyWaitlist(c.env, shop, b)
+      if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(wp); else await wp
+    }
   }
   return c.redirect('/dashboard/bookings')
 }
+
+// Email waiting customers that a spot opened on a matching day/service. Best-effort.
+async function notifyWaitlist(env, shop, booking) {
+  try {
+    const db = env.DB
+    const date = dateTzString(new Date(booking.start_time * 1000), shop.timezone)
+    const rows = (await db.prepare(
+      "SELECT * FROM waitlist WHERE shop_id=? AND status='waiting' AND (date IS NULL OR date=?) AND (service_id IS NULL OR service_id=?) ORDER BY created_at LIMIT 20"
+    ).bind(shop.id, date, booking.service_id).all()).results || []
+    if (!rows.length) return
+    const base = env.BASE_URL || 'https://alisa.bored.investments'
+    const link = `${base}/${shop.slug}/book${booking.service_id ? `?service=${booking.service_id}` : ''}`
+    for (const w of rows) {
+      if (!w.email) continue
+      const m = { subject: `A spot just opened at ${shop.name}`, html: `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:0 auto;padding:22px"><h2>A spot just opened 👋</h2><p>Hi ${esc(w.name || '')}, a place has become available at <strong>${esc(shop.name)}</strong>${w.date ? ` on ${esc(w.date)}` : ''}. First in, first served — book now:</p><p><a href="${link}" style="display:inline-block;background:${shop.accent || '#0f766e'};color:#fff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:999px">Book now →</a></p></div>` }
+      const r = await sendEmail(env, { to: w.email, subject: m.subject, html: m.html, replyTo: shop.email || undefined })
+      if (r.ok) await db.prepare("UPDATE waitlist SET status='notified', notified_at=unixepoch() WHERE id=?").bind(w.id).run()
+    }
+  } catch (e) { console.error('notifyWaitlist failed:', String(e)) }
+}
+app.post('/waitlist/:id/remove', async (c) => {
+  await c.env.DB.prepare("UPDATE waitlist SET status='cancelled' WHERE id=? AND shop_id=?").bind(c.req.param('id'), c.get('shop').id).run()
+  return c.redirect('/dashboard/bookings')
+})
 app.post('/bookings/:id/complete', c => bookingAction(c, 'complete'))
 app.post('/bookings/:id/no_show', c => bookingAction(c, 'no_show'))
 app.post('/bookings/:id/cancel', c => bookingAction(c, 'cancel'))
@@ -923,6 +973,7 @@ app.get('/bookings/:id/pay', async (c) => {
         <tr><td class="muted">Price</td><td style="text-align:right" colspan="2">${money(b.price_cents || 0, cur)}</td></tr>
         ${collectedRows}
         ${tipsTotal > 0 ? `<tr><td class="muted">Tips 💜</td><td style="text-align:right" colspan="2">${money(tipsTotal, cur)}</td></tr>` : ''}
+        ${b.no_show_fee_cents > 0 ? `<tr><td class="muted">🚫 No-show fee${depositPaid ? ' (deposit kept toward it)' : ''}</td><td style="text-align:right" colspan="2">${money(b.no_show_fee_cents, cur)}</td></tr>` : ''}
         <tr><td style="font-weight:700;padding-top:8px;border-top:1px solid var(--line)">${remaining > 0 ? 'Remaining' : 'Status'}</td><td style="text-align:right;font-weight:700;padding-top:8px;border-top:1px solid var(--line)" colspan="2">${b.covered_by ? `<span class="tag completed">Covered by ${b.covered_by} ✓</span>` : (remaining > 0 ? money(remaining, cur) : '<span class="tag completed">Paid in full ✓</span>')}</td></tr>
       </table>
     </div>
@@ -1893,6 +1944,16 @@ app.get('/settings', async (c) => {
         <script>(function(){var f=document.getElementById('depfield');function sync(){var m=document.querySelector('input[name=charge_mode]:checked');if(f)f.style.display=(m&&m.value==='deposit')?'':'none';}document.querySelectorAll('input[name=charge_mode]').forEach(function(r){r.addEventListener('change',sync);});sync();})();</script>
       </div>
       <div class="card" style="padding:22px;margin-bottom:18px">
+        <h3 style="margin-top:0">🚫 No-shows &amp; waitlist</h3>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer;margin:2px 0"><input type="checkbox" name="waitlist_enabled" value="1" style="width:auto" ${shop.waitlist_enabled ? 'checked' : ''}> Let customers join a <strong>waitlist</strong> when a day is full (auto-emailed when a spot opens)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer;margin:8px 0 2px"><input type="checkbox" name="no_show_fee_enabled" value="1" style="width:auto" ${shop.no_show_fee_enabled ? 'checked' : ''}> Charge a <strong>no-show fee</strong></label>
+        <div class="row" style="max-width:420px">
+          <div class="field" style="flex:0 0 140px"><label>Fee type</label><select name="no_show_fee_type"><option value="amount" ${shop.no_show_fee_type !== 'percent' ? 'selected' : ''}>Fixed amount</option><option value="percent" ${shop.no_show_fee_type === 'percent' ? 'selected' : ''}>% of price</option></select></div>
+          <div class="field"><label>Fee value <span class="muted">(${shop.currency.toUpperCase()} or %)</span></label><input type="number" name="no_show_fee_value" min="0" step="0.01" value="${shop.no_show_fee_type === 'percent' ? (shop.no_show_fee_value || 0) : ((shop.no_show_fee_value || 0) / 100)}"></div>
+        </div>
+        <p class="muted" style="font-size:.82rem;margin:0">Shown to customers before they book. A paid deposit is kept toward the fee; any remainder can be collected via Payments. (We never store card details, so fees aren’t auto-charged without a deposit.)</p>
+      </div>
+      <div class="card" style="padding:22px;margin-bottom:18px">
         <h3 style="margin-top:0">🕑 Opening hours</h3>
         <p class="muted" style="font-size:.82rem;margin:0 0 12px">When the shop is open. Bookings — online, group and roster — are only ever offered inside these hours. Untick a day to mark it closed. (Each therapist can still have shorter hours within these.)</p>
         ${(() => {
@@ -1995,7 +2056,8 @@ app.post('/settings', async (c) => {
   const depPct = chargeMode === 'deposit' ? Math.max(1, Math.min(100, parseInt(f.deposit_pct) || 20)) : (parseInt(f.deposit_pct) || 0)
   await db.prepare(`UPDATE shops SET name=?, emoji=?, tagline=?, about=?, slug=?, accent=?, phone=?, email=?,
     address=?, suburb=?, state=?, postcode=?, timezone=?, charge_mode=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, hours_json=?, google_review_url=?, loyalty_enabled=?,
-    legal_name=?, abn=?, gst_registered=?, invoice_footer=?, health_fund_receipts=? WHERE id=?`)
+    legal_name=?, abn=?, gst_registered=?, invoice_footer=?, health_fund_receipts=?,
+    waitlist_enabled=?, no_show_fee_enabled=?, no_show_fee_type=?, no_show_fee_value=? WHERE id=?`)
     .bind((f.name || shop.name).toString().trim(), (f.emoji || '💆').toString().trim() || '💆',
       (f.tagline || '').toString(), (f.about || '').toString(), slug, (f.accent || '#0f766e').toString(),
       (f.phone || '').toString(), (f.email || '').toString(), (f.address || '').toString(),
@@ -2003,6 +2065,8 @@ app.post('/settings', async (c) => {
       (f.timezone || shop.timezone).toString(), chargeMode, depPct, parseInt(f.cancellation_hours) || 0, interval, hoursJson, (f.google_review_url || '').toString().trim() || null,
       f.loyalty_enabled ? 1 : 0,
       (f.legal_name || '').toString().trim() || null, (f.abn || '').toString().trim() || null, f.gst_registered ? 1 : 0, (f.invoice_footer || '').toString().trim() || null, f.health_fund_receipts ? 1 : 0,
+      f.waitlist_enabled ? 1 : 0, f.no_show_fee_enabled ? 1 : 0, (f.no_show_fee_type === 'percent' ? 'percent' : 'amount'),
+      (f.no_show_fee_type === 'percent' ? Math.max(0, Math.min(100, Math.round(parseFloat(f.no_show_fee_value) || 0))) : Math.max(0, Math.round((parseFloat(f.no_show_fee_value) || 0) * 100))),
       shop.id).run()
 
   // Replace loyalty tiers from the form rows.

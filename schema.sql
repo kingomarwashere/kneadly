@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS shops (
   gst_registered INTEGER NOT NULL DEFAULT 0,  -- show GST (1/11) on tax invoices
   invoice_footer TEXT,           -- extra notes printed on invoices/receipts
   health_fund_receipts INTEGER NOT NULL DEFAULT 0,  -- offer private-health rebate receipts
+  waitlist_enabled INTEGER NOT NULL DEFAULT 0,      -- let customers join a waitlist when full
+  no_show_fee_enabled INTEGER NOT NULL DEFAULT 0,   -- charge/record a no-show fee
+  no_show_fee_type TEXT NOT NULL DEFAULT 'amount',  -- amount | percent
+  no_show_fee_value INTEGER NOT NULL DEFAULT 0,     -- cents (amount) or percent of price
   is_published INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
@@ -353,6 +357,25 @@ CREATE TABLE IF NOT EXISTS memberships (
 CREATE INDEX IF NOT EXISTS idx_memberships_shop ON memberships(shop_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memberships_sub ON memberships(stripe_subscription_id);
 
+-- Waitlist: customers who want a slot on a day that's full; notified on a cancellation.
+CREATE TABLE IF NOT EXISTS waitlist (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  service_id TEXT,
+  staff_id TEXT,                 -- null = any therapist
+  date TEXT,                     -- preferred date 'YYYY-MM-DD' (null = any)
+  name TEXT NOT NULL,
+  email TEXT,
+  phone TEXT,
+  note TEXT,
+  lang TEXT,
+  status TEXT NOT NULL DEFAULT 'waiting',  -- waiting | notified | booked | cancelled
+  notified_at INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_waitlist_shop ON waitlist(shop_id, date, status);
+
 -- Days a therapist is off (holidays, sick days) — blocks that whole date
 CREATE TABLE IF NOT EXISTS time_off (
   id TEXT PRIMARY KEY,
@@ -397,6 +420,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   gift_applied INTEGER NOT NULL DEFAULT 0,     -- gift-card credit redeemed toward this booking (cents)
   gift_card_id TEXT,                           -- gift card redeemed on this booking (nullable)
   covered_by TEXT,                             -- 'package' | 'membership' when a prepaid session covers this booking
+  no_show_fee_cents INTEGER NOT NULL DEFAULT 0,-- fee recorded when marked no-show
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,
   FOREIGN KEY (service_id) REFERENCES services(id),

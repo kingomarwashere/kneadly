@@ -540,6 +540,46 @@ app.get('/:slug/membership/success/:id', async (c) => {
   return giftPage(c, shop, lang, { title: t(lang, 'mem_success_head'), inner })
 })
 
+// ─── Waitlist ────────────────────────────────────────────────────────────────
+app.get('/:slug/waitlist', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published) return c.notFound()
+  if (!shop.waitlist_enabled) return c.redirect(`/${shop.slug}/book`)
+  const services = (await db.prepare('SELECT id,name FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order').bind(shop.id).all()).results || []
+  await Promise.all(services.map(async s => { s.name = await translate(c.env, s.name, lang) }))
+  const done = c.req.query('done')
+  const inner = done ? `<div class="card" style="padding:30px;text-align:center;margin-top:16px"><div style="font-size:2.4rem">📝</div><h1 style="margin:.2em 0">${esc(t(lang, 'wl_done'))}</h1><p class="muted">${esc(t(lang, 'wl_done_sub', { shop: shop.name }))}</p><p style="margin-top:18px"><a class="btn" href="/${shop.slug}">${esc(t(lang, 'back_to', { shop: shop.name }))}</a></p></div>` : `
+    <h1 style="margin:.3em 0 .1em">📝 ${esc(t(lang, 'wl_title'))}</h1>
+    <p class="muted" style="margin-top:0">${esc(t(lang, 'wl_sub', { shop: shop.name }))}</p>
+    <form method="post" action="/${shop.slug}/waitlist" class="card" style="padding:24px;margin-top:12px">
+      <div class="row">
+        <div class="field"><label>${esc(t(lang, 'full_name'))}</label><input name="name" required></div>
+        <div class="field"><label>${esc(t(lang, 'email'))}</label><input type="email" name="email" required></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>${esc(t(lang, 'mobile'))} <span class="muted">(${esc(t(lang, 'optional'))})</span></label><input name="phone"></div>
+        <div class="field"><label>${esc(t(lang, 'wl_date_opt'))}</label><input type="date" name="date"></div>
+      </div>
+      <div class="field"><label>${esc(t(lang, 'choose_service'))} <span class="muted">(${esc(t(lang, 'optional'))})</span></label><select name="service_id"><option value="">${esc(t(lang, 'wl_any_service'))}</option>${services.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
+      <button class="btn gold" style="width:100%">${esc(t(lang, 'wl_join_btn'))}</button>
+    </form>`
+  return giftPage(c, shop, lang, { title: t(lang, 'wl_nav'), inner })
+})
+
+app.post('/:slug/waitlist', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published || !shop.waitlist_enabled) return c.notFound()
+  const f = await c.req.parseBody()
+  const name = (f.name || '').toString().trim(), email = (f.email || '').toString().trim().toLowerCase()
+  if (!name || !email) return c.redirect(`/${shop.slug}/waitlist`)
+  const date = /^\d{4}-\d{2}-\d{2}$/.test((f.date || '').toString()) ? f.date.toString() : null
+  await db.prepare('INSERT INTO waitlist (id, shop_id, service_id, date, name, email, phone, lang) VALUES (?,?,?,?,?,?,?,?)')
+    .bind(genId(), shop.id, (f.service_id || '').toString() || null, date, name, email, (f.phone || '').toString().trim() || null, lang).run()
+  return c.redirect(`/${shop.slug}/waitlist?done=1`)
+})
+
 // ─── Shop public page ────────────────────────────────────────────────────────
 app.get('/:slug', async (c) => {
   const db = c.env.DB
@@ -741,7 +781,9 @@ app.get('/:slug/book', async (c) => {
             : (payFull
               ? t(lang, 'full_line', { amount: money(depositCents, shop.currency), hours: shop.cancellation_hours })
               : t(lang, 'deposit_line', { deposit: money(depositCents, shop.currency), rest: money(service.price_cents - depositCents, shop.currency), hours: shop.cancellation_hours }))}
+          ${shop.no_show_fee_enabled && (shop.no_show_fee_value > 0) ? `<div class="muted" style="font-size:.8rem;margin-top:6px">⚠️ ${esc(t(lang, 'noshow_policy', { fee: shop.no_show_fee_type === 'percent' ? shop.no_show_fee_value + '%' : money(shop.no_show_fee_value, shop.currency) }))}</div>` : ''}
         </div>
+        ${shop.waitlist_enabled ? `<p style="text-align:center;margin:-4px 0 12px"><a class="muted" href="/${shop.slug}/waitlist">${esc(t(lang, 'wl_cta'))} →</a></p>` : ''}
 
         <button class="btn" style="width:100%" id="submit" disabled>${t(lang, 'pick_time_btn')}</button>
       </form>

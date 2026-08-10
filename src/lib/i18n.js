@@ -103,6 +103,11 @@ const DICT = {
     mem_plans: 'Memberships', mem_included: '{n} sessions/period', mem_discount: '{n}% off everything', mem_join_btn: 'Become a member →',
     mem_needs_stripe: 'Memberships need the shop to connect Stripe first.',
     mem_success_head: 'You’re a member! ⭐', mem_success_sub: 'Your membership at {shop} is active — enjoy your benefits.', mem_success_pending: 'Finalising your membership — this will be active shortly.',
+    // Waitlist
+    wl_nav: 'Waitlist', wl_title: 'Join the waitlist', wl_sub: 'Fully booked? Leave your details and {shop} will email you the moment a spot opens.',
+    wl_date_opt: 'Preferred date (optional)', wl_any_service: 'Any service', wl_join_btn: 'Join the waitlist →',
+    wl_done: 'You’re on the list! 📝', wl_done_sub: 'We’ll email you if a spot opens at {shop}.', wl_cta: 'Fully booked? Join the waitlist',
+    noshow_policy: 'A no-show fee of {fee} applies if you don’t attend and don’t cancel in time.',
     demo_pill: 'Try it — no signup', demo_title: 'See a real booking page',
     demo_sub: 'These are live example shops. Click through, pick a service and time, and make a test booking — exactly what your clients would do.',
     demo_book_test: 'Book a test appointment →',
