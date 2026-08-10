@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS shops (
   loyalty_value INTEGER NOT NULL DEFAULT 2000,    -- cents (amount) or percent
   gift_cards_enabled INTEGER NOT NULL DEFAULT 0,  -- sell gift cards online (needs Stripe connected)
   gift_card_expiry_years INTEGER NOT NULL DEFAULT 3,  -- validity from purchase; min 3 (AU law)
+  legal_name TEXT,               -- registered business name for tax invoices
+  abn TEXT,                      -- Australian Business Number (or tax id)
+  gst_registered INTEGER NOT NULL DEFAULT 0,  -- show GST (1/11) on tax invoices
+  invoice_footer TEXT,           -- extra notes printed on invoices/receipts
+  health_fund_receipts INTEGER NOT NULL DEFAULT 0,  -- offer private-health rebate receipts
   is_published INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
@@ -65,6 +70,9 @@ CREATE TABLE IF NOT EXISTS services (
   duration_minutes INTEGER NOT NULL DEFAULT 60,
   price_cents INTEGER NOT NULL DEFAULT 0,
   category TEXT NOT NULL DEFAULT 'Massage',
+  modality TEXT,                 -- e.g. "Remedial Massage" (health-fund receipts)
+  item_code TEXT,                -- health-fund item/service code (optional)
+  rebatable INTEGER NOT NULL DEFAULT 0,  -- eligible for a private-health rebate receipt
   is_active INTEGER NOT NULL DEFAULT 1,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -101,6 +109,9 @@ CREATE TABLE IF NOT EXISTS staff (
   token TEXT,                     -- secret self-service link so the therapist can set their own hours
   therapist_id TEXT,              -- linked therapist login account (nullable)
   email TEXT,                     -- used to auto-link this row to a therapist account
+  commission_pct INTEGER NOT NULL DEFAULT 0,  -- % of service revenue paid to this therapist
+  provider_no TEXT,               -- health-fund provider number (for rebate receipts)
+  qualification TEXT,             -- e.g. "Dip. Remedial Massage" (shown on receipts)
   is_active INTEGER NOT NULL DEFAULT 1,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -258,7 +269,8 @@ CREATE TABLE IF NOT EXISTS payments (
   id TEXT PRIMARY KEY,
   shop_id TEXT NOT NULL,
   booking_id TEXT NOT NULL,
-  amount_cents INTEGER NOT NULL,
+  amount_cents INTEGER NOT NULL,         -- service payment portion
+  tip_cents INTEGER NOT NULL DEFAULT 0,  -- tip portion (on top of amount_cents)
   method TEXT NOT NULL DEFAULT 'cash',   -- cash | card | transfer | other
   note TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),

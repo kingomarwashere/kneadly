@@ -1,0 +1,16 @@
+-- Phase 1: money & compliance. Run once.
+ALTER TABLE shops ADD COLUMN legal_name TEXT;
+ALTER TABLE shops ADD COLUMN abn TEXT;
+ALTER TABLE shops ADD COLUMN gst_registered INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE shops ADD COLUMN invoice_footer TEXT;
+ALTER TABLE shops ADD COLUMN health_fund_receipts INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE staff ADD COLUMN commission_pct INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE staff ADD COLUMN provider_no TEXT;
+ALTER TABLE staff ADD COLUMN qualification TEXT;
+
+ALTER TABLE services ADD COLUMN modality TEXT;
+ALTER TABLE services ADD COLUMN item_code TEXT;
+ALTER TABLE services ADD COLUMN rebatable INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE payments ADD COLUMN tip_cents INTEGER NOT NULL DEFAULT 0;

@@ -3,7 +3,7 @@ import { layout, money, esc } from '../lib/views.js'
 import { genId } from '../lib/auth.js'
 import { formatBookingTime, dateTzString, localToUtcMs } from '../lib/slots.js'
 import { stripeClient } from '../lib/stripe.js'
-import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTherapistInvite, sendReviewRequest } from '../lib/email.js'
+import { sendCancellationEmail, sendBookingEmails, sendRescheduleEmail, sendTherapistInvite, sendReviewRequest, sendEmail } from '../lib/email.js'
 import { findOrCreateClient } from '../lib/clients.js'
 import { loyaltyStatus, tierDiscount, tierLabel, getTiers, loyaltyAvailByClient } from '../lib/loyalty.js'
 import { freeTherapist, therapistFreeAt, shopHoursFor, availStartTimes } from '../lib/booking.js'
@@ -45,6 +45,7 @@ function shell(c, active, title, body, notice) {
       ${tab('bookings', '🗓️ Bookings')}
       ${tab('clients', '👤 Clients')}
       ${tab('reviews', '⭐ Reviews')}
+      ${tab('reports', '📊 Reports')}
       ${tab('gift-cards', '🎁 Gift cards')}
       ${tab('services', '💆 Services')}
       ${tab('staff', '🧑‍⚕️ Therapists')}
@@ -830,6 +831,8 @@ app.get('/bookings/:id/edit', async (c) => {
     ${(() => { const col = collectedCents(b), price = b.price_cents || 0; return `<p style="margin-top:-2px;font-size:.9rem">💰 ${price > 0 && col >= price ? '<span class="tag completed">Paid in full ✓</span>' : `<strong>${money(col, shop.currency)}</strong> collected of <strong>${money(price, shop.currency)}</strong>${col < price ? ` · <span class="muted">${money(price - col, shop.currency)} remaining</span>` : ''}`}</p>` })()}
     ${['confirmed', 'pending_payment', 'completed'].includes(b.status) ? `<div class="inline" style="gap:8px;margin:0 0 14px;flex-wrap:wrap">
       <a class="btn sm gold" href="/dashboard/bookings/${b.id}/pay">💳 Payments — record cash / take card</a>
+      <a class="btn ghost sm" href="/dashboard/bookings/${b.id}/invoice?type=tax" target="_blank">🧾 Invoice</a>
+      ${shop.health_fund_receipts ? `<a class="btn ghost sm" href="/dashboard/bookings/${b.id}/invoice?type=health" target="_blank">🩺 Rebate receipt</a>` : ''}
       ${['confirmed', 'pending_payment'].includes(b.status) ? `<form method="post" action="/dashboard/bookings/${b.id}/complete"><button class="btn sm">✓ Mark done</button></form>
       <form method="post" action="/dashboard/bookings/${b.id}/no_show"><button class="btn ghost sm">No-show</button></form>
       <form method="post" action="/dashboard/bookings/${b.id}/cancel" onsubmit="return confirm('${b.group_id ? 'Cancel the whole group booking' : 'Cancel this booking'}${b.stripe_charge_id ? ' and refund the deposit' : ''}?')"><button class="btn danger sm">✕ Cancel booking</button></form>` : ''}
@@ -872,11 +875,13 @@ const PAY_METHODS = { cash: '💵 Cash', card: '💳 Card', transfer: '🏦 Bank
 const paymentsFor = (db, bookingId) => db.prepare('SELECT * FROM payments WHERE booking_id=? ORDER BY created_at').bind(bookingId).all().then(r => r.results || [])
 
 // Record a payment against a booking + keep the paid_cents aggregate in sync.
-async function recordPayment(db, shop, bookingId, amountCents, method, note) {
+// Only the service portion (amount) counts toward paid_cents; tips are tracked
+// separately (they don't reduce the balance owed).
+async function recordPayment(db, shop, bookingId, amountCents, method, note, tipCents = 0) {
   const m = PAY_METHODS[method] ? method : 'cash'
-  await db.prepare('INSERT INTO payments (id, shop_id, booking_id, amount_cents, method, note) VALUES (?,?,?,?,?,?)')
-    .bind(genId(), shop.id, bookingId, amountCents, m, (note || '').toString().slice(0, 200) || null).run()
-  await db.prepare('UPDATE bookings SET paid_cents = COALESCE(paid_cents,0) + ? WHERE id=?').bind(amountCents, bookingId).run()
+  await db.prepare('INSERT INTO payments (id, shop_id, booking_id, amount_cents, tip_cents, method, note) VALUES (?,?,?,?,?,?,?)')
+    .bind(genId(), shop.id, bookingId, amountCents, Math.max(0, tipCents | 0), m, (note || '').toString().slice(0, 200) || null).run()
+  if (amountCents > 0) await db.prepare('UPDATE bookings SET paid_cents = COALESCE(paid_cents,0) + ? WHERE id=?').bind(amountCents, bookingId).run()
 }
 
 app.get('/bookings/:id/pay', async (c) => {
@@ -894,11 +899,12 @@ app.get('/bookings/:id/pay', async (c) => {
   const collectedRows = [
     ...(depositPaid ? [`<tr><td class="muted">💳 Deposit (online)</td><td style="text-align:right">${money(depositPaid, cur)}</td><td></td></tr>`] : []),
     ...pays.map(p => `<tr>
-      <td class="muted">${PAY_METHODS[p.method] || p.method}${p.note ? ` <span style="font-size:.8em">— ${esc(p.note)}</span>` : ''} <span style="font-size:.75em;color:var(--muted)">· ${esc(formatBookingTime(p.created_at, shop.timezone).split(',').slice(1).join(',').trim())}</span></td>
-      <td style="text-align:right">${money(p.amount_cents, cur)}</td>
-      <td style="text-align:right"><form method="post" action="/dashboard/bookings/${b.id}/pay/${p.id}/delete" onsubmit="return confirm('Remove this ${money(p.amount_cents, cur)} payment?')" style="display:inline"><button class="btn ghost sm" style="padding:3px 8px" title="Remove">✕</button></form></td>
+      <td class="muted">${PAY_METHODS[p.method] || p.method}${p.tip_cents > 0 ? ` <span style="font-size:.8em">+ ${money(p.tip_cents, cur)} tip 💜</span>` : ''}${p.note ? ` <span style="font-size:.8em">— ${esc(p.note)}</span>` : ''} <span style="font-size:.75em;color:var(--muted)">· ${esc(formatBookingTime(p.created_at, shop.timezone).split(',').slice(1).join(',').trim())}</span></td>
+      <td style="text-align:right">${money((p.amount_cents || 0) + (p.tip_cents || 0), cur)}</td>
+      <td style="text-align:right"><form method="post" action="/dashboard/bookings/${b.id}/pay/${p.id}/delete" onsubmit="return confirm('Remove this payment?')" style="display:inline"><button class="btn ghost sm" style="padding:3px 8px" title="Remove">✕</button></form></td>
     </tr>`),
   ].join('')
+  const tipsTotal = pays.reduce((s, p) => s + (p.tip_cents || 0), 0)
 
   return shell(c, 'bookings', 'Take payment', `
     <a href="/dashboard/bookings/${b.id}/edit" class="muted">← Back to booking</a>
@@ -910,6 +916,7 @@ app.get('/bookings/:id/pay', async (c) => {
       <table style="width:100%;font-size:.9rem;margin-bottom:8px">
         <tr><td class="muted">Price</td><td style="text-align:right" colspan="2">${money(b.price_cents || 0, cur)}</td></tr>
         ${collectedRows}
+        ${tipsTotal > 0 ? `<tr><td class="muted">Tips 💜</td><td style="text-align:right" colspan="2">${money(tipsTotal, cur)}</td></tr>` : ''}
         <tr><td style="font-weight:700;padding-top:8px;border-top:1px solid var(--line)">${remaining > 0 ? 'Remaining' : 'Status'}</td><td style="text-align:right;font-weight:700;padding-top:8px;border-top:1px solid var(--line)" colspan="2">${remaining > 0 ? money(remaining, cur) : '<span class="tag completed">Paid in full ✓</span>'}</td></tr>
       </table>
     </div>
@@ -919,13 +926,15 @@ app.get('/bookings/:id/pay', async (c) => {
       <p class="muted" style="font-size:.85rem;margin-top:0">Someone paid in person? Record it here — cash, an external card machine, or a bank transfer.</p>
       <form method="post" action="/dashboard/bookings/${b.id}/pay/record">
         <div class="row">
-          <div class="field" style="flex:0 0 150px"><label>Amount (${cur.toUpperCase()})</label>
-            <input type="number" name="amount" min="0.01" step="0.01" value="${(((remaining || b.price_cents) || 0) / 100).toFixed(2)}" required></div>
+          <div class="field" style="flex:0 0 130px"><label>Amount (${cur.toUpperCase()})</label>
+            <input type="number" name="amount" min="0" step="0.01" value="${(((remaining || b.price_cents) || 0) / 100).toFixed(2)}"></div>
+          <div class="field" style="flex:0 0 110px"><label>Tip <span class="muted">(opt.)</span></label>
+            <input type="number" name="tip" min="0" step="0.01" placeholder="0.00"></div>
           <div class="field"><label>Method</label><select name="method">
             ${Object.entries(PAY_METHODS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
           </select></div>
         </div>
-        <div class="field"><label>Note <span class="muted">(optional)</span></label><input name="note" placeholder="e.g. Tip included, paid at front desk"></div>
+        <div class="field"><label>Note <span class="muted">(optional)</span></label><input name="note" placeholder="e.g. paid at front desk"></div>
         <button class="btn">Record payment</button>
       </form>
     </div>
@@ -948,9 +957,10 @@ app.post('/bookings/:id/pay/record', async (c) => {
   const b = await db.prepare('SELECT id FROM bookings WHERE id=? AND shop_id=?').bind(id, shop.id).first()
   if (!b) return c.redirect('/dashboard/bookings')
   const f = await c.req.parseBody()
-  const amount = Math.round(parseFloat((f.amount || '').toString()) * 100)
-  if (Number.isFinite(amount) && amount > 0) {
-    await recordPayment(db, shop, id, amount, (f.method || 'cash').toString(), (f.note || '').toString())
+  const amount = Math.max(0, Math.round(parseFloat((f.amount || '0').toString()) * 100) || 0)
+  const tip = Math.max(0, Math.round(parseFloat((f.tip || '0').toString()) * 100) || 0)
+  if (amount > 0 || tip > 0) {
+    await recordPayment(db, shop, id, amount, (f.method || 'cash').toString(), (f.note || '').toString(), tip)
   }
   return c.redirect(`/dashboard/bookings/${id}/pay?saved=1`)
 })
@@ -1018,6 +1028,123 @@ app.get('/bookings/:id/pay-status', async (c) => {
   if (!b) return c.json({ collected: 0 })
   const collected = collectedCents(b)
   return c.json({ collected, remaining: Math.max(0, (b.price_cents || 0) - collected) })
+})
+
+// ─── Tax invoice + health-fund rebate receipt ────────────────────────────────
+// Build the inner HTML of an invoice/receipt. kind: 'tax' | 'health'.
+function invoiceInner(shop, b, st, svc, pays, kind) {
+  const cur = shop.currency
+  const collected = collectedCents(b)
+  const tips = pays.reduce((s, p) => s + (p.tip_cents || 0), 0)
+  const paidInFull = (b.price_cents || 0) > 0 && collected >= b.price_cents
+  const invNo = `${kind === 'health' ? 'RCPT' : 'INV'}-${(b.id || '').slice(0, 8).toUpperCase()}`
+  const biz = shop.legal_name || shop.name
+  const addr = [shop.address, shop.suburb, shop.state, shop.postcode].filter(Boolean).join(', ')
+  const gst = shop.gst_registered ? Math.round((b.price_cents || 0) / 11) : 0
+  const row = (l, v, strong) => `<div style="display:flex;justify-content:space-between;padding:6px 0;${strong ? 'font-weight:700;border-top:2px solid #000;margin-top:4px' : 'border-top:1px solid #ddd'}"><span>${l}</span><span>${v}</span></div>`
+  const head = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
+      <div>
+        <div style="font-size:1.4rem;font-weight:800">${esc(biz)}</div>
+        ${addr ? `<div style="color:#555;font-size:.9rem">${esc(addr)}</div>` : ''}
+        ${shop.phone ? `<div style="color:#555;font-size:.9rem">${esc(shop.phone)}</div>` : ''}
+        ${shop.abn ? `<div style="color:#555;font-size:.9rem">ABN ${esc(shop.abn)}</div>` : ''}
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:1.2rem;font-weight:800">${kind === 'health' ? 'RECEIPT' : (shop.gst_registered ? 'TAX INVOICE' : 'INVOICE')}</div>
+        <div style="color:#555;font-size:.9rem">${esc(invNo)}</div>
+        <div style="color:#555;font-size:.9rem">${esc(formatBookingTime(b.start_time, shop.timezone))}</div>
+      </div>
+    </div>`
+
+  if (kind === 'health') {
+    return `${head}
+      <div style="margin-top:18px;font-weight:700">Private health fund rebate receipt</div>
+      <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;font-size:.95rem">
+        <div><span style="color:#555">Patient:</span> <strong>${esc(b.customer_name || '')}</strong></div>
+        <div><span style="color:#555">Date of service:</span> <strong>${esc(formatBookingTime(b.start_time, shop.timezone))}</strong></div>
+        <div><span style="color:#555">Practitioner:</span> <strong>${esc(st?.name || b.staff_name || '')}</strong></div>
+        <div><span style="color:#555">Provider no.:</span> <strong>${esc(st?.provider_no || '—')}</strong></div>
+        ${st?.qualification ? `<div><span style="color:#555">Qualification:</span> <strong>${esc(st.qualification)}</strong></div>` : ''}
+        <div><span style="color:#555">Modality:</span> <strong>${esc(svc?.modality || b.service_name || '')}</strong></div>
+        ${svc?.item_code ? `<div><span style="color:#555">Item code:</span> <strong>${esc(svc.item_code)}</strong></div>` : ''}
+      </div>
+      <div style="margin-top:16px">
+        ${row('Service', esc(b.service_name || ''))}
+        ${row('Fee', money(b.price_cents, cur))}
+        ${row('Amount paid', money(Math.min(collected, b.price_cents || collected), cur), true)}
+      </div>
+      <div style="margin-top:14px;padding:8px 12px;background:#f4faf8;border-radius:8px;font-weight:700;text-align:center">${paidInFull ? 'PAID IN FULL' : 'PART PAID'}</div>
+      <p style="color:#555;font-size:.82rem;margin-top:16px">This receipt is issued to help you claim a rebate from your private health fund. Rebates are subject to your fund’s policy and level of cover.${st && !st.provider_no ? ' <strong>(No provider number on file — add it in Therapists.)</strong>' : ''}</p>
+      ${shop.invoice_footer ? `<p style="color:#555;font-size:.82rem">${esc(shop.invoice_footer)}</p>` : ''}
+      <div style="margin-top:26px;display:flex;justify-content:space-between;font-size:.9rem">
+        <div>Practitioner signature: ______________________</div>
+      </div>`
+  }
+
+  // Tax invoice
+  return `${head}
+    <div style="margin-top:16px;font-size:.95rem"><span style="color:#555">Billed to:</span> <strong>${esc(b.customer_name || '')}</strong>${b.customer_email ? ` · ${esc(b.customer_email)}` : ''}</div>
+    <div style="margin-top:14px">
+      <div style="display:flex;justify-content:space-between;padding:6px 0;font-weight:700;border-bottom:2px solid #000"><span>Description</span><span>Amount</span></div>
+      ${row(`${esc(b.service_name || 'Appointment')} — ${esc(formatBookingTime(b.start_time, shop.timezone))}`, money(b.price_cents, cur))}
+      ${shop.gst_registered ? row('Includes GST', money(gst, cur)) : ''}
+      ${row('Total', money(b.price_cents, cur), true)}
+      ${collected > 0 ? row('Paid', '− ' + money(Math.min(collected, b.price_cents || collected), cur)) : ''}
+      ${tips > 0 ? row('Tip', money(tips, cur)) : ''}
+      ${row('Balance due', money(Math.max(0, (b.price_cents || 0) - collected), cur), true)}
+    </div>
+    ${shop.gst_registered ? '' : '<p style="color:#555;font-size:.82rem;margin-top:14px">No GST has been charged.</p>'}
+    ${shop.invoice_footer ? `<p style="color:#555;font-size:.82rem;margin-top:10px">${esc(shop.invoice_footer)}</p>` : ''}`
+}
+
+async function loadInvoiceData(c) {
+  const db = c.env.DB, shop = c.get('shop')
+  const b = await db.prepare('SELECT * FROM bookings WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (!b) return null
+  const st = await db.prepare('SELECT name, provider_no, qualification FROM staff WHERE id=?').bind(b.staff_id).first()
+  const svc = await db.prepare('SELECT modality, item_code, rebatable FROM services WHERE id=?').bind(b.service_id).first()
+  const pays = await paymentsFor(db, b.id)
+  return { shop, b, st, svc, pays }
+}
+
+app.get('/bookings/:id/invoice', async (c) => {
+  const data = await loadInvoiceData(c)
+  if (!data) return c.redirect('/dashboard/bookings')
+  const { shop, b, st, svc, pays } = data
+  const kind = c.req.query('type') === 'health' ? 'health' : 'tax'
+  const sent = c.req.query('sent')
+  const inner = invoiceInner(shop, b, st, svc, pays, kind)
+  const css = `body{background:#f4f2ee}
+    .bar{max-width:720px;margin:14px auto 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:0 12px}
+    .sheet{max-width:720px;margin:12px auto 40px;background:#fff;color:#000;padding:34px 38px;box-shadow:0 1px 6px rgba(0,0,0,.12)}
+    @media print{.noprint{display:none!important}body{background:#fff}.sheet{box-shadow:none;margin:0;max-width:none;padding:0}@page{size:A4 portrait;margin:14mm}}`
+  return c.html(layout(kind === 'health' ? 'Health-fund receipt' : 'Tax invoice', `
+    <div class="bar noprint">
+      <a class="btn ghost sm" href="/dashboard/bookings/${b.id}/edit">← Back to booking</a>
+      <a class="btn ghost sm" href="/dashboard/bookings/${b.id}/invoice?type=tax">🧾 Tax invoice</a>
+      ${shop.health_fund_receipts ? `<a class="btn ghost sm" href="/dashboard/bookings/${b.id}/invoice?type=health">🩺 Health-fund receipt</a>` : ''}
+      <button class="btn sm" onclick="window.print()">🖨️ Print / PDF</button>
+      ${b.customer_email ? `<form method="post" action="/dashboard/bookings/${b.id}/invoice/email?type=${kind}" style="margin:0"><button class="btn sm">✉️ Email to ${esc(b.customer_email)}</button></form>` : ''}
+      ${sent ? '<span class="tag completed">Emailed ✓</span>' : ''}
+    </div>
+    <div class="sheet">${inner}</div>
+  `, { lang: c.get('lang'), css }))
+})
+
+app.post('/bookings/:id/invoice/email', async (c) => {
+  const data = await loadInvoiceData(c)
+  if (!data) return c.redirect('/dashboard/bookings')
+  const { shop, b, st, svc, pays } = data
+  const kind = c.req.query('type') === 'health' ? 'health' : 'tax'
+  if (b.customer_email) {
+    const inner = invoiceInner(shop, b, st, svc, pays, kind)
+    const html = `<!DOCTYPE html><html><body style="margin:0;background:#faf8f5;font-family:-apple-system,Segoe UI,sans-serif"><div style="max-width:640px;margin:0 auto;padding:24px 16px"><div style="background:#fff;border:1px solid #e8e2da;border-radius:14px;padding:28px 30px;color:#111">${inner}</div></div></body></html>`
+    const subject = (kind === 'health' ? 'Your rebate receipt from ' : 'Your tax invoice from ') + (shop.legal_name || shop.name)
+    const r = await sendEmail(c.env, { to: b.customer_email, subject, html, replyTo: shop.email || undefined })
+    if (!r.ok) console.error('invoice email failed:', r.error)
+  }
+  return c.redirect(`/dashboard/bookings/${b.id}/invoice?type=${kind}&sent=1`)
 })
 
 // ─── Group / couples booking ─────────────────────────────────────────────────
@@ -1433,19 +1560,43 @@ app.get('/services', async (c) => {
           <div class="field"><label>Duration (minutes)</label><input type="number" name="duration" value="60" min="10" step="5" required></div>
           <div class="field"><label>Price (${shop.currency.toUpperCase()})</label><input type="number" name="price" value="120" min="0" step="1" required></div>
         </div>
+        ${shop.health_fund_receipts ? `<div class="row">
+          <div class="field"><label>Modality <span class="muted">(health-fund receipts)</span></label><input name="modality" placeholder="Remedial Massage"></div>
+          <div class="field" style="flex:0 0 140px"><label>Item code <span class="muted">(optional)</span></label><input name="item_code" placeholder="e.g. 102"></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer;margin:2px 0 10px"><input type="checkbox" name="rebatable" value="1" style="width:auto"> Eligible for a private health-fund rebate receipt</label>` : ''}
         <button class="btn">Add service</button>
       </form>
     </div>
+    ${shop.health_fund_receipts ? `<div class="card" style="padding:22px;margin-top:18px">
+      <h3 style="margin-top:0">🩺 Rebate settings per service</h3>
+      <p class="muted" style="font-size:.85rem;margin-top:0">Mark which services can be claimed on private health and set the modality/item code printed on receipts.</p>
+      ${rows.map(s => `<form method="post" action="/dashboard/services/${s.id}/rebate" class="inline" style="gap:8px;flex-wrap:wrap;border-top:1px solid var(--line);padding:10px 0">
+        <strong style="flex:0 0 150px">${esc(s.name)}</strong>
+        <input name="modality" value="${esc(s.modality || '')}" placeholder="Modality" style="max-width:170px">
+        <input name="item_code" value="${esc(s.item_code || '')}" placeholder="Item code" style="max-width:100px">
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400"><input type="checkbox" name="rebatable" value="1" style="width:auto" ${s.rebatable ? 'checked' : ''}> Rebatable</label>
+        <button class="btn ghost sm">Save</button>
+      </form>`).join('')}
+    </div>` : ''}
   `)
 })
 
 app.post('/services', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
   const f = await c.req.parseBody()
-  await db.prepare(`INSERT INTO services (id, shop_id, name, description, duration_minutes, price_cents, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(genId(), shop.id, (f.name || '').toString().trim(), (f.description || '').toString().trim(),
+  await db.prepare(`INSERT INTO services (id, shop_id, name, description, duration_minutes, price_cents, modality, item_code, rebatable, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(genId(), shop.id, (f.name || '').toString().trim(), (f.description || '').toString().trim(),
       parseInt(f.duration) || 60, Math.round((parseFloat(f.price) || 0) * 100),
+      (f.modality || '').toString().trim() || null, (f.item_code || '').toString().trim() || null, f.rebatable ? 1 : 0,
       Math.floor(Date.now() / 1000)).run()
+  return c.redirect('/dashboard/services')
+})
+
+app.post('/services/:id/rebate', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), f = await c.req.parseBody()
+  await db.prepare('UPDATE services SET modality=?, item_code=?, rebatable=? WHERE id=? AND shop_id=?')
+    .bind((f.modality || '').toString().trim() || null, (f.item_code || '').toString().trim() || null, f.rebatable ? 1 : 0, c.req.param('id'), shop.id).run()
   return c.redirect('/dashboard/services')
 })
 
@@ -1494,6 +1645,16 @@ app.get('/staff', async (c) => {
             : 'Set their email so they can create a login at <a href="/pro" target="_blank">/pro</a> and manage hours across all their shops.'}</p>
         </div>
       </div>
+
+      <form method="post" action="/dashboard/staff/${st.id}/details" class="card" style="padding:12px 14px;margin-top:12px">
+        <label style="margin-bottom:6px">💵 Pay &amp; credentials</label>
+        <div class="row">
+          <div class="field" style="flex:0 0 150px"><label>Commission %</label><input type="number" name="commission_pct" value="${st.commission_pct || 0}" min="0" max="100"></div>
+          <div class="field"><label>Health-fund provider no. <span class="muted">(receipts)</span></label><input name="provider_no" value="${esc(st.provider_no || '')}" placeholder="e.g. 1234567A"></div>
+          <div class="field"><label>Qualification <span class="muted">(receipts)</span></label><input name="qualification" value="${esc(st.qualification || '')}" placeholder="Dip. Remedial Massage"></div>
+        </div>
+        <button class="btn ghost sm">Save pay &amp; credentials</button>
+      </form>
 
       <form method="post" action="/dashboard/staff/${st.id}/hours" style="margin-top:14px">
         <label>Weekly hours</label>
@@ -1558,6 +1719,13 @@ app.post('/staff', async (c) => {
 
 app.post('/staff/:id/delete', async (c) => {
   await c.env.DB.prepare('DELETE FROM staff WHERE id = ? AND shop_id = ?').bind(c.req.param('id'), c.get('shop').id).run()
+  return c.redirect('/dashboard/staff')
+})
+
+app.post('/staff/:id/details', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), f = await c.req.parseBody()
+  await db.prepare('UPDATE staff SET commission_pct=?, provider_no=?, qualification=? WHERE id=? AND shop_id=?')
+    .bind(Math.max(0, Math.min(100, parseInt(f.commission_pct) || 0)), (f.provider_no || '').toString().trim() || null, (f.qualification || '').toString().trim() || null, c.req.param('id'), shop.id).run()
   return c.redirect('/dashboard/staff')
 })
 
@@ -1698,6 +1866,17 @@ app.get('/settings', async (c) => {
         <script>document.querySelectorAll('.hrrow').forEach(function(row){var cb=row.querySelector('.hropen'),tw=row.querySelector('.hrtimes');function sync(){tw.style.opacity=cb.checked?'':'0.4';tw.querySelectorAll('input').forEach(function(i){i.disabled=!cb.checked;});}cb.addEventListener('change',sync);sync();});</script>
       </div>
       <div class="card" style="padding:22px;margin-bottom:18px">
+        <h3 style="margin-top:0">🧾 Business &amp; tax (for invoices &amp; receipts)</h3>
+        <div class="row">
+          <div class="field"><label>Registered business name</label><input name="legal_name" value="${f('legal_name')}" placeholder="${esc(shop.name)} Pty Ltd"></div>
+          <div class="field"><label>ABN / Tax ID</label><input name="abn" value="${f('abn')}" placeholder="12 345 678 901"></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer;margin:4px 0"><input type="checkbox" name="gst_registered" value="1" style="width:auto" ${shop.gst_registered ? 'checked' : ''}> Registered for GST (show GST line on tax invoices)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer;margin:4px 0"><input type="checkbox" name="health_fund_receipts" value="1" style="width:auto" ${shop.health_fund_receipts ? 'checked' : ''}> Offer private health-fund rebate receipts (remedial massage)</label>
+        <div class="field" style="margin-top:8px"><label>Invoice footer <span class="muted">(optional — printed on invoices/receipts)</span></label><input name="invoice_footer" value="${f('invoice_footer')}" placeholder="Thank you! Rebates subject to your fund’s policy."></div>
+        <p class="muted" style="font-size:.82rem;margin:0">Used on the <strong>Tax invoice</strong> and <strong>health-fund receipt</strong> you can print or email from any booking. For rebate receipts, also set each therapist’s provider number (Therapists) and mark rebatable services (Services).</p>
+      </div>
+      <div class="card" style="padding:22px;margin-bottom:18px">
         <h3 style="margin-top:0">Reviews</h3>
         <div class="field"><label>Google review link</label><input name="google_review_url" value="${f('google_review_url')}" placeholder="https://g.page/r/…/review"></div>
         <p class="muted" style="font-size:.82rem;margin:0">After a visit, clients are asked for a review (kept in <a href="/dashboard/reviews">Reviews</a>). Happy clients (4–5★) are then offered this Google link. Get it from your Google Business Profile → “Ask for reviews”.</p>
@@ -1765,13 +1944,16 @@ app.post('/settings', async (c) => {
   // Keep a sensible deposit_pct: at least 1% when in deposit mode.
   const depPct = chargeMode === 'deposit' ? Math.max(1, Math.min(100, parseInt(f.deposit_pct) || 20)) : (parseInt(f.deposit_pct) || 0)
   await db.prepare(`UPDATE shops SET name=?, emoji=?, tagline=?, about=?, slug=?, accent=?, phone=?, email=?,
-    address=?, suburb=?, state=?, postcode=?, timezone=?, charge_mode=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, hours_json=?, google_review_url=?, loyalty_enabled=? WHERE id=?`)
+    address=?, suburb=?, state=?, postcode=?, timezone=?, charge_mode=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, hours_json=?, google_review_url=?, loyalty_enabled=?,
+    legal_name=?, abn=?, gst_registered=?, invoice_footer=?, health_fund_receipts=? WHERE id=?`)
     .bind((f.name || shop.name).toString().trim(), (f.emoji || '💆').toString().trim() || '💆',
       (f.tagline || '').toString(), (f.about || '').toString(), slug, (f.accent || '#0f766e').toString(),
       (f.phone || '').toString(), (f.email || '').toString(), (f.address || '').toString(),
       (f.suburb || '').toString(), (f.state || '').toString(), (f.postcode || '').toString(),
       (f.timezone || shop.timezone).toString(), chargeMode, depPct, parseInt(f.cancellation_hours) || 0, interval, hoursJson, (f.google_review_url || '').toString().trim() || null,
-      f.loyalty_enabled ? 1 : 0, shop.id).run()
+      f.loyalty_enabled ? 1 : 0,
+      (f.legal_name || '').toString().trim() || null, (f.abn || '').toString().trim() || null, f.gst_registered ? 1 : 0, (f.invoice_footer || '').toString().trim() || null, f.health_fund_receipts ? 1 : 0,
+      shop.id).run()
 
   // Replace loyalty tiers from the form rows.
   await db.prepare('DELETE FROM loyalty_tiers WHERE shop_id=?').bind(shop.id).run()
@@ -2048,6 +2230,67 @@ app.post('/clients/:id/delete', async (c) => {
   return c.redirect('/dashboard/clients')
 })
 
+// ─── Reports ─────────────────────────────────────────────────────────────────
+app.get('/reports', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), tz = shop.timezone, cur = shop.currency
+  const today = dateTzString(new Date(), tz)
+  const monthStart = today.slice(0, 8) + '01'
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query('from') || '') ? c.req.query('from') : monthStart
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query('to') || '') ? c.req.query('to') : today
+  const fromU = Math.floor(localToUtcMs(from, '00:00', tz) / 1000)
+  const toU = Math.floor(localToUtcMs(to, '00:00', tz) / 1000) + 86400  // inclusive of the "to" day
+
+  const staff = (await db.prepare('SELECT id, name, commission_pct FROM staff WHERE shop_id=? ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  const rev = (await db.prepare(`SELECT staff_id, COUNT(*) n, COALESCE(SUM(price_cents),0) revenue
+    FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? AND status IN ('confirmed','completed') GROUP BY staff_id`).bind(shop.id, fromU, toU).all()).results || []
+  const tips = (await db.prepare(`SELECT b.staff_id, COALESCE(SUM(p.tip_cents),0) tips
+    FROM payments p JOIN bookings b ON b.id=p.booking_id WHERE b.shop_id=? AND b.start_time>=? AND b.start_time<? GROUP BY b.staff_id`).bind(shop.id, fromU, toU).all()).results || []
+  const revBy = Object.fromEntries(rev.map(r => [r.staff_id, r]))
+  const tipsBy = Object.fromEntries(tips.map(r => [r.staff_id, r.tips]))
+
+  let tRev = 0, tComm = 0, tTips = 0, tN = 0
+  const rows = staff.map(s => {
+    const r = revBy[s.id] || { n: 0, revenue: 0 }
+    const tip = tipsBy[s.id] || 0
+    const commission = Math.round(r.revenue * (s.commission_pct || 0) / 100)
+    tRev += r.revenue; tComm += commission; tTips += tip; tN += r.n
+    return `<tr>
+      <td><strong>${esc(s.name)}</strong></td>
+      <td style="text-align:center">${r.n}</td>
+      <td style="text-align:right">${money(r.revenue, cur)}</td>
+      <td style="text-align:center">${s.commission_pct || 0}%</td>
+      <td style="text-align:right">${money(commission, cur)}</td>
+      <td style="text-align:right">${tip ? money(tip, cur) : '—'}</td>
+      <td style="text-align:right"><strong>${money(commission + tip, cur)}</strong></td>
+    </tr>`
+  }).join('')
+
+  return shell(c, 'reports', 'Reports', `
+    <h2>📊 Reports</h2>
+    <form class="inline" style="gap:8px;margin:6px 0 16px;flex-wrap:wrap">
+      <span class="muted" style="font-size:.9rem">From</span><input type="date" name="from" value="${from}" style="padding:7px 10px;border:1px solid var(--line);border-radius:9px;font:inherit">
+      <span class="muted" style="font-size:.9rem">to</span><input type="date" name="to" value="${to}" style="padding:7px 10px;border:1px solid var(--line);border-radius:9px;font:inherit">
+      <button class="btn sm">Apply</button>
+      <span class="muted" style="font-size:.82rem">Bookings dated in this range (confirmed &amp; completed).</span>
+    </form>
+
+    <div class="grid g3" style="margin-bottom:18px">
+      <div class="card" style="padding:16px"><div class="muted" style="font-size:.8rem">Service revenue</div><div class="stat" style="font-size:1.5rem">${money(tRev, cur)}</div></div>
+      <div class="card" style="padding:16px"><div class="muted" style="font-size:.8rem">Appointments</div><div class="stat" style="font-size:1.5rem">${tN}</div></div>
+      <div class="card" style="padding:16px"><div class="muted" style="font-size:.8rem">Tips collected 💜</div><div class="stat" style="font-size:1.5rem">${money(tTips, cur)}</div></div>
+    </div>
+
+    <h3>Therapist commission &amp; tips</h3>
+    <p class="muted" style="margin-top:-6px;font-size:.85rem">Set each therapist’s commission % on the <a href="/dashboard/staff">Therapists</a> page. Tips are paid on top, 100% to the therapist.</p>
+    <div class="card" style="padding:6px 16px;overflow-x:auto"><table>
+      <tr><th>Therapist</th><th style="text-align:center">Appts</th><th style="text-align:right">Revenue</th><th style="text-align:center">Rate</th><th style="text-align:right">Commission</th><th style="text-align:right">Tips</th><th style="text-align:right">Payout</th></tr>
+      ${rows || '<tr><td colspan="7" class="muted">No therapists.</td></tr>'}
+      <tr class="tot" style="border-top:2px solid var(--line);font-weight:700"><td>Total</td><td style="text-align:center">${tN}</td><td style="text-align:right">${money(tRev, cur)}</td><td></td><td style="text-align:right">${money(tComm, cur)}</td><td style="text-align:right">${money(tTips, cur)}</td><td style="text-align:right">${money(tComm + tTips, cur)}</td></tr>
+    </table></div>
+    <p class="muted" style="font-size:.8rem;margin-top:10px">More analytics (retention, no-show rate, utilization) are coming to this page.</p>
+  `)
+})
+
 // ─── Gift cards ──────────────────────────────────────────────────────────────
 const giftStatusTag = (s) => {
   const map = { active: ['completed', 'Active'], redeemed: ['', 'Redeemed'], pending_payment: ['pending_payment', 'Pending'], void: ['cancelled', 'Void'] }
@@ -2183,9 +2426,9 @@ app.get('/export/payments.csv', async (c) => {
     FROM payments p JOIN bookings b ON b.id=p.booking_id WHERE p.shop_id=? ORDER BY p.created_at DESC`).bind(shop.id).all()).results || []
   const cur = shop.currency
   const csv = toCsv(
-    ['Recorded', 'Amount', 'Method', 'Customer', 'Service', 'Appointment', 'Note'],
+    ['Recorded', 'Amount', 'Tip', 'Method', 'Customer', 'Service', 'Appointment', 'Note'],
     rows.map(p => [
-      formatBookingTime(p.created_at, shop.timezone), money(p.amount_cents, cur), p.method,
+      formatBookingTime(p.created_at, shop.timezone), money(p.amount_cents, cur), p.tip_cents ? money(p.tip_cents, cur) : '', p.method,
       p.customer_name, p.service_name, formatBookingTime(p.start_time, shop.timezone), p.note,
     ])
   )
