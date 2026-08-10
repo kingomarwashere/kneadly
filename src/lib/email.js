@@ -63,7 +63,7 @@ export function bookingConfirmationEmail(lang, { shop, b, base }) {
     detailRow(t(lang, 'c_therapist'), b.staff_name || t(lang, 'our_team')),
     detailRow(t(lang, 'c_when'), when),
     detailRow(t(lang, 'c_price'), money(b.price_cents, shop.currency)),
-    ...(b.deposit_cents > 0 ? [detailRow(t(lang, 'c_deposit_paid'), money(b.deposit_cents, shop.currency))] : []),
+    ...(b.deposit_cents > 0 ? [detailRow(t(lang, b.deposit_cents >= b.price_cents ? 'c_paid' : 'c_deposit_paid'), money(b.deposit_cents, shop.currency))] : []),
   ].join('')
   const url = `${base}/${shop.slug}/booked/${b.id}`
   const contact = shop.phone || shop.name
@@ -80,7 +80,7 @@ export function bookingConfirmationEmail(lang, { shop, b, base }) {
   const text = `${t(lang, 'booked_in')}\n${t(lang, 'done_sub', { shop: shop.name })}\n\n`
     + `${t(lang, 'c_service')}: ${b.service_name}\n${t(lang, 'c_therapist')}: ${b.staff_name || t(lang, 'our_team')}\n`
     + `${t(lang, 'c_when')}: ${when}\n${t(lang, 'c_price')}: ${money(b.price_cents, shop.currency)}\n`
-    + (b.deposit_cents > 0 ? `${t(lang, 'c_deposit_paid')}: ${money(b.deposit_cents, shop.currency)}\n` : '')
+    + (b.deposit_cents > 0 ? `${t(lang, b.deposit_cents >= b.price_cents ? 'c_paid' : 'c_deposit_paid')}: ${money(b.deposit_cents, shop.currency)}\n` : '')
     + `\n${url}\n${t(lang, 'email_questions', { contact })}`
 
   return { subject: t(lang, 'email_subject', { shop: shop.name }), html: shell(accent, shop.emoji, shop.name, inner), text }

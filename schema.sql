@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS shops (
   emoji TEXT NOT NULL DEFAULT '💆',
   accent TEXT NOT NULL DEFAULT '#0f766e',
   currency TEXT NOT NULL DEFAULT 'aud',
-  deposit_pct INTEGER NOT NULL DEFAULT 20,   -- % of service price taken as deposit
+  deposit_pct INTEGER NOT NULL DEFAULT 20,   -- % of service price taken as deposit (used when charge_mode='deposit')
+  charge_mode TEXT NOT NULL DEFAULT 'deposit',   -- none | deposit | full : what customers pay when booking online
   cancellation_hours INTEGER NOT NULL DEFAULT 24,
   slot_interval_minutes INTEGER NOT NULL DEFAULT 15,  -- spacing between bookable start times
   hours_json TEXT,               -- opening hours: {"0":["09:00","18:00"],...} keyed by weekday (0=Sun); null/missing day = closed

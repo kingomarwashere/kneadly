@@ -817,7 +817,7 @@ app.get('/bookings/:id/edit', async (c) => {
           <td>${money(price, shop.currency)}</td>
           <td>${price > 0 && col >= price ? '✓' : (col > 0 ? money(col, shop.currency) : '—')}${h.refunded_at ? ' <span class="muted" style="font-size:.7rem">(refunded)</span>' : ''}</td>
           <td><span class="tag ${h.status}">${h.status.replace('_', ' ')}</span></td>
-          <td class="muted" style="font-size:.82rem;max-width:220px;white-space:pre-wrap">${h.notes ? esc(h.notes) : '—'}</td>
+          <td style="font-size:.95rem;min-width:180px;max-width:340px;white-space:pre-wrap;line-height:1.4">${h.notes ? esc(h.notes) : '—'}</td>
         </tr>` }).join('')}
       </table></div>` : '<p class="muted">No history yet.</p>'}
     </div>`
@@ -1653,14 +1653,26 @@ app.get('/settings', async (c) => {
         <p class="muted" style="font-size:.82rem;margin:12px 0 0">The deposit <em>amount</em> is set by <strong>Deposit (% of price)</strong> below — set it to 0% to skip deposits even when connected.</p>
       </div>
       <div class="card" style="padding:22px;margin-bottom:18px">
-        <h3 style="margin-top:0">Deposits &amp; cancellation</h3>
-        <div class="row">
-          <div class="field"><label>Deposit (% of price)</label><input type="number" name="deposit_pct" value="${f('deposit_pct', 20)}" min="0" max="100"></div>
-          <div class="field"><label>Free cancellation window (hours)</label><input type="number" name="cancellation_hours" value="${f('cancellation_hours', 24)}" min="0"></div>
-          <div class="field"><label>Booking time interval</label>
-            <select name="slot_interval_minutes">${[5, 10, 15, 20, 30, 60].map(m => `<option value="${m}" ${Number(shop.slot_interval_minutes || 15) === m ? 'selected' : ''}>Every ${m} minutes</option>`).join('')}</select></div>
-        </div>
-        <p class="muted" style="font-size:.82rem;margin:0">Set deposit to 0% to take bookings with no upfront payment. <strong>Booking time interval</strong> controls how far apart the offered start times are — choose 5 minutes for the finest control.</p>
+        <h3 style="margin-top:0">Booking payment &amp; cancellation</h3>
+        ${(() => {
+          const mode = shop.charge_mode || (shop.deposit_pct > 0 ? 'deposit' : 'none')
+          const opt = (val, label, desc) => `<label class="chargeopt" style="display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px;cursor:pointer">
+            <input type="radio" name="charge_mode" value="${val}" ${mode === val ? 'checked' : ''} style="width:auto;margin-top:3px">
+            <span><strong>${label}</strong><br><span class="muted" style="font-size:.85rem">${desc}</span></span></label>`
+          return `<label style="font-weight:600;display:block;margin-bottom:8px">What do customers pay when they book online?</label>
+          ${opt('none', 'Nothing up front', 'Customers just reserve the slot and pay in person. No card needed.')}
+          ${opt('deposit', 'A deposit', 'Take part of the price to secure the booking; the rest is paid in-store.')}
+          ${opt('full', 'The full price', 'Charge the whole service price at booking time.')}
+          <div class="row" id="chargefields" style="margin-top:6px">
+            <div class="field" id="depfield"><label>Deposit (% of price)</label><input type="number" name="deposit_pct" value="${f('deposit_pct', 20)}" min="1" max="100"></div>
+            <div class="field"><label>Free cancellation window (hours)</label><input type="number" name="cancellation_hours" value="${f('cancellation_hours', 24)}" min="0"></div>
+            <div class="field"><label>Booking time interval</label>
+              <select name="slot_interval_minutes">${[5, 10, 15, 20, 30, 60].map(m => `<option value="${m}" ${Number(shop.slot_interval_minutes || 15) === m ? 'selected' : ''}>Every ${m} minutes</option>`).join('')}</select></div>
+          </div>`
+        })()}
+        <p class="muted" style="font-size:.82rem;margin:0">Taking a deposit or full payment online needs your Stripe account connected (above). Until then, bookings are taken with no upfront charge.</p>
+        <style>.chargeopt:has(input:checked){border-color:var(--accent);background:rgba(15,118,110,.06)}</style>
+        <script>(function(){var f=document.getElementById('depfield');function sync(){var m=document.querySelector('input[name=charge_mode]:checked');if(f)f.style.display=(m&&m.value==='deposit')?'':'none';}document.querySelectorAll('input[name=charge_mode]').forEach(function(r){r.addEventListener('change',sync);});sync();})();</script>
       </div>
       <div class="card" style="padding:22px;margin-bottom:18px">
         <h3 style="margin-top:0">🕑 Opening hours</h3>
@@ -1749,13 +1761,16 @@ app.post('/settings', async (c) => {
   // map must never silently close the whole shop.
   const hoursJson = Object.keys(hours).length ? JSON.stringify(hours) : null
 
+  const chargeMode = ['none', 'deposit', 'full'].includes((f.charge_mode || '').toString()) ? f.charge_mode.toString() : 'none'
+  // Keep a sensible deposit_pct: at least 1% when in deposit mode.
+  const depPct = chargeMode === 'deposit' ? Math.max(1, Math.min(100, parseInt(f.deposit_pct) || 20)) : (parseInt(f.deposit_pct) || 0)
   await db.prepare(`UPDATE shops SET name=?, emoji=?, tagline=?, about=?, slug=?, accent=?, phone=?, email=?,
-    address=?, suburb=?, state=?, postcode=?, timezone=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, hours_json=?, google_review_url=?, loyalty_enabled=? WHERE id=?`)
+    address=?, suburb=?, state=?, postcode=?, timezone=?, charge_mode=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, hours_json=?, google_review_url=?, loyalty_enabled=? WHERE id=?`)
     .bind((f.name || shop.name).toString().trim(), (f.emoji || '💆').toString().trim() || '💆',
       (f.tagline || '').toString(), (f.about || '').toString(), slug, (f.accent || '#0f766e').toString(),
       (f.phone || '').toString(), (f.email || '').toString(), (f.address || '').toString(),
       (f.suburb || '').toString(), (f.state || '').toString(), (f.postcode || '').toString(),
-      (f.timezone || shop.timezone).toString(), parseInt(f.deposit_pct) || 0, parseInt(f.cancellation_hours) || 0, interval, hoursJson, (f.google_review_url || '').toString().trim() || null,
+      (f.timezone || shop.timezone).toString(), chargeMode, depPct, parseInt(f.cancellation_hours) || 0, interval, hoursJson, (f.google_review_url || '').toString().trim() || null,
       f.loyalty_enabled ? 1 : 0, shop.id).run()
 
   // Replace loyalty tiers from the form rows.
@@ -1997,7 +2012,7 @@ app.get('/clients/:id', async (c) => {
         <h3>Booking history</h3>
         ${history.length ? `<div class="card" style="padding:6px 18px"><table>
           <tr><th>When</th><th>Service</th><th>Therapist</th><th>Paid</th><th>Status</th><th>Notes</th></tr>
-          ${history.map(b => { const col = collectedCents(b), price = b.price_cents || 0; return `<tr><td>${esc(formatBookingTime(b.start_time, shop.timezone))}</td><td>${esc(b.service_name || '')}</td><td>${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</td><td>${price > 0 && col >= price ? '✓' : (col > 0 ? money(col, shop.currency) : '—')}</td><td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td><td class="muted" style="font-size:.82rem;max-width:220px;white-space:pre-wrap">${b.notes ? esc(b.notes) : '—'}</td></tr>` }).join('')}
+          ${history.map(b => { const col = collectedCents(b), price = b.price_cents || 0; return `<tr><td>${esc(formatBookingTime(b.start_time, shop.timezone))}</td><td>${esc(b.service_name || '')}</td><td>${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</td><td>${price > 0 && col >= price ? '✓' : (col > 0 ? money(col, shop.currency) : '—')}</td><td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td><td style="font-size:.95rem;min-width:180px;max-width:340px;white-space:pre-wrap;line-height:1.4">${b.notes ? esc(b.notes) : '—'}</td></tr>` }).join('')}
         </table></div>` : '<p class="muted">No bookings yet.</p>'}
       </div>
     </div>

@@ -181,6 +181,15 @@ const GIFT_MIN = 1000                              // $10 minimum
 // charge — mirroring how demo bookings are taken without a deposit. We never let
 // a real shop issue free store credit from a public page (abuse vector).
 const isDemoShop = (slug) => DEMO_SLUGS.includes(slug)
+
+// What a shop charges when a customer books online: nothing, a % deposit, or the
+// full price. Falls back to the old deposit_pct behaviour for un-migrated rows.
+function chargePct(shop) {
+  const mode = shop.charge_mode || (shop.deposit_pct > 0 ? 'deposit' : 'none')
+  if (mode === 'full') return 100
+  if (mode === 'deposit') return Math.max(0, Math.min(100, shop.deposit_pct || 0))
+  return 0
+}
 function giftSaleState(c, shop) {
   const stripeReady = !!(c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled)
   const isDemo = isDemoShop(shop.slug)
@@ -497,7 +506,9 @@ app.get('/:slug/book', async (c) => {
   }
 
   const staff = await eligibleStaff(db, shop.id, service.id)
-  const depositCents = Math.round(service.price_cents * shop.deposit_pct / 100)
+  const pct = chargePct(shop)
+  const depositCents = Math.round(service.price_cents * pct / 100)
+  const payFull = pct >= 100
   // Translate the chosen service's name + description for display.
   ;[service.name, service.description] = await translateAll(c.env, [service.name, service.description], lang)
   // All services (translated) for the couple/group guest pickers.
@@ -512,7 +523,7 @@ app.get('/:slug/book', async (c) => {
     no_availability: t(lang, 'no_availability'),
     fully_booked: t(lang, 'fully_booked'),
     pick_time_btn: t(lang, 'pick_time_btn'),
-    confirm: depositCents > 0 ? t(lang, 'confirm_pay') : t(lang, 'confirm_book'),
+    confirm: depositCents <= 0 ? t(lang, 'confirm_book') : (payFull ? t(lang, 'confirm_pay_full') : t(lang, 'confirm_pay')),
   }
 
   return c.html(layout(`${t(lang, 'book')} ${service.name} — ${shop.name}`, `
@@ -579,9 +590,11 @@ app.get('/:slug/book', async (c) => {
         <div class="field"><label>${t(lang, 'notes_label')}</label><textarea name="notes" rows="2" placeholder="${t(lang, 'notes_ph')}"></textarea></div>
 
         <div id="depositcard" class="card" style="padding:14px 16px;background:#f6f2ec;border-style:dashed;margin-bottom:16px">
-          ${depositCents > 0
-            ? t(lang, 'deposit_line', { deposit: money(depositCents, shop.currency), rest: money(service.price_cents - depositCents, shop.currency), hours: shop.cancellation_hours })
-            : t(lang, 'no_deposit_line')}
+          ${depositCents <= 0
+            ? t(lang, 'no_deposit_line')
+            : (payFull
+              ? t(lang, 'full_line', { amount: money(depositCents, shop.currency), hours: shop.cancellation_hours })
+              : t(lang, 'deposit_line', { deposit: money(depositCents, shop.currency), rest: money(service.price_cents - depositCents, shop.currency), hours: shop.cancellation_hours }))}
         </div>
 
         <button class="btn" style="width:100%" id="submit" disabled>${t(lang, 'pick_time_btn')}</button>
@@ -713,13 +726,15 @@ app.post('/:slug/book', async (c) => {
     items.push({ service: g.svc, staffId: stId, staffName: ctx.staffById[stId]?.name || '', name: g.name, email: '', phone: '', notes: '', clientId: gClient, requested: (g.staff && g.staff !== 'any') ? 1 : 0 })
   }
 
-  // Deposit is charged ONCE for the whole booking/group (sum of each person's).
-  const dep = (svc) => Math.round(svc.price_cents * shop.deposit_pct / 100)
+  // The upfront charge (deposit % or full price, per the shop's setting) is taken
+  // ONCE for the whole booking/group (sum of each person's).
+  const pct = chargePct(shop)
+  const dep = (svc) => Math.round(svc.price_cents * pct / 100)
   const totalDeposit = items.reduce((s, it) => s + dep(it.service), 0)
-  // Deposits require the shop to have connected Stripe (Connect) with charges
-  // enabled. Shops that haven't connected simply take bookings with no deposit —
-  // that's the demo/test path.
-  const useStripe = shop.deposit_pct > 0 && totalDeposit > 0 && !!c.env.STRIPE_SECRET_KEY
+  // Online charges require the shop to have connected Stripe (Connect) with charges
+  // enabled. Shops that haven't connected (or that charge nothing) simply take
+  // bookings with no upfront payment — that's also the demo/test path.
+  const useStripe = pct > 0 && totalDeposit > 0 && !!c.env.STRIPE_SECRET_KEY
     && !!shop.stripe_account_id && !!shop.stripe_charges_enabled
   const status = useStripe ? 'pending_payment' : 'confirmed'
 
@@ -732,14 +747,15 @@ app.post('/:slug/book', async (c) => {
        start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff, group_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, shop.id, it.service.id, it.staffId, it.name, it.email, it.phone,
-        startUnix, startUnix + it.service.duration_minutes * 60, status, it.service.price_cents, dep(it.service), it.service.name, it.staffName, it.notes, c.get('lang') || 'en', it.clientId, it.requested, groupId).run()
+        startUnix, startUnix + it.service.duration_minutes * 60, status, it.service.price_cents, useStripe ? dep(it.service) : 0, it.service.name, it.staffName, it.notes, c.get('lang') || 'en', it.clientId, it.requested, groupId).run()
   }
   const bookingId = ids[0]
 
   // One Stripe deposit for the whole booking/group; the webhook confirms all of it.
   if (status === 'pending_payment') {
     const base = c.env.BASE_URL || 'https://alisa.bored.investments'
-    const label = items.length > 1 ? `Deposit — ${items.length} appointments at ${shop.name}` : `Deposit — ${service.name} at ${shop.name}`
+    const kind = pct >= 100 ? 'Payment' : 'Deposit'
+    const label = items.length > 1 ? `${kind} — ${items.length} appointments at ${shop.name}` : `${kind} — ${service.name} at ${shop.name}`
     // Platform fee: 1% of the deposit, collected to Alisa; the rest settles to
     // the shop's connected account (Connect direct charge).
     const feeAmount = Math.max(0, Math.round(totalDeposit * 0.01))
@@ -820,7 +836,7 @@ app.get('/:slug/booked/:id', async (c) => {
       <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_therapist')}</span><strong>${esc(b.staff_name || t(lang, 'our_team'))}</strong></div>
       <div style="display:flex;justify-content:space-between;padding:8px 0${b.group_id ? '' : ';border-bottom:1px solid var(--line)'}"><span class="muted">${t(lang, 'c_when')}</span><strong>${formatBookingTime(b.start_time, shop.timezone)}</strong></div>
       ${b.group_id ? '' : `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_price')}</span><strong>${money(b.price_cents, shop.currency)}</strong></div>`}
-      ${(b.deposit_cents > 0 && !b.group_id) ? `<div style="display:flex;justify-content:space-between;padding:8px 0"><span class="muted">${t(lang, 'c_deposit_paid')}</span><strong>${money(b.deposit_cents, shop.currency)}</strong></div>` : ''}
+      ${(b.deposit_cents > 0 && !b.group_id) ? `<div style="display:flex;justify-content:space-between;padding:8px 0"><span class="muted">${t(lang, b.deposit_cents >= b.price_cents ? 'c_paid' : 'c_deposit_paid')}</span><strong>${money(b.deposit_cents, shop.currency)}</strong></div>` : ''}
     </div>
     ${groupMembers.length ? `<div class="card" style="padding:16px 20px;text-align:left;margin-top:14px">
       <div style="font-weight:600;margin-bottom:4px">👥 ${t(lang, 'group_booked', { n: groupMembers.length + 1 })}</div>
