@@ -39,6 +39,8 @@ export function stripeClient(secretKey) {
     retrieveCheckoutSession: (id, opts) => req('GET', `/checkout/sessions/${id}`, null, opts),
     createRefund: (data, opts) => req('POST', '/refunds', data, opts),
     retrievePaymentIntent: (id, opts) => req('GET', `/payment_intents/${id}`, null, opts),
+    retrieveSubscription: (id, opts) => req('GET', `/subscriptions/${id}`, null, opts),
+    cancelSubscription: (id, opts) => req('DELETE', `/subscriptions/${id}`, null, opts),
     // ── Connect (Express) ──
     createAccount: (data) => req('POST', '/accounts', data),
     retrieveAccount: (id) => req('GET', `/accounts/${id}`),

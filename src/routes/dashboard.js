@@ -8,6 +8,7 @@ import { findOrCreateClient } from '../lib/clients.js'
 import { loyaltyStatus, tierDiscount, tierLabel, getTiers, loyaltyAvailByClient } from '../lib/loyalty.js'
 import { freeTherapist, therapistFreeAt, shopHoursFor, availStartTimes } from '../lib/booking.js'
 import { findGiftCard, redeemableState, redeemGift, restoreGiftForBooking } from '../lib/giftcard.js'
+import { generatePackageCode, findClientPackage, packageUsable, redeemPackageSession, activeMembership } from '../lib/prepaid.js'
 import qrcode from '../lib/qrcode.js'
 
 // QR code as an inline SVG string (error-correction M, auto version).
@@ -47,6 +48,7 @@ function shell(c, active, title, body, notice) {
       ${tab('reviews', '⭐ Reviews')}
       ${tab('reports', '📊 Reports')}
       ${tab('gift-cards', '🎁 Gift cards')}
+      ${tab('packages', '🎟️ Packages')}
       ${tab('services', '💆 Services')}
       ${tab('staff', '🧑‍⚕️ Therapists')}
       ${tab('settings', '⚙️ Settings')}
@@ -444,7 +446,7 @@ app.get('/bookings', async (c) => {
         <td>${esc(b.customer_name)}<div class="muted" style="font-size:.8rem">${esc(b.customer_email)}${b.customer_phone ? ' · ' + esc(b.customer_phone) : ''}</div>${b.notes ? `<div class="muted" style="font-size:.8rem">📝 ${esc(b.notes)}</div>` : ''}</td>
         <td>${esc(b.service_name)}</td>
         <td>${b.requested_staff ? '❤️ ' : ''}${esc(b.staff_name || '')}</td>
-        <td>${price > 0 && col >= price ? '<span class="tag completed">Paid ✓</span>' : (col > 0 ? `${money(col, shop.currency)}<div class="muted" style="font-size:.75rem">of ${money(price, shop.currency)}</div>` : '—')}${b.refunded_at ? '<div class="muted" style="font-size:.75rem">deposit refunded</div>' : ''}</td>
+        <td>${b.covered_by ? '<span class="tag completed">Covered ✓</span>' : (price > 0 && col >= price ? '<span class="tag completed">Paid ✓</span>' : (col > 0 ? `${money(col, shop.currency)}<div class="muted" style="font-size:.75rem">of ${money(price, shop.currency)}</div>` : '—'))}${b.refunded_at ? '<div class="muted" style="font-size:.75rem">deposit refunded</div>' : ''}</td>
         <td><span class="tag ${b.status}">${b.status.replace('_', ' ')}</span></td>
         <td><div class="inline">
           ${['confirmed', 'pending_payment', 'completed'].includes(b.status) ? `<a class="btn gold sm" href="/dashboard/bookings/${b.id}/pay">💳 Pay</a>` : ''}
@@ -828,7 +830,7 @@ app.get('/bookings/:id/edit', async (c) => {
     <h2>Edit / reschedule booking</h2>
     ${c.req.query('err') === 'busy' ? '<div class="notice err" style="max-width:580px;margin-bottom:10px">⚠️ That therapist is already booked over that time — pick another time or therapist.</div>' : ''}
     <p class="muted" style="margin-top:-6px">Change the time, therapist or details. <span class="tag ${b.status}">${b.status.replace('_', ' ')}</span>${b.loyalty_applied > 0 ? ` · 🎁 <strong>${money(b.loyalty_applied, shop.currency)} loyalty reward applied</strong>` : ''}${b.gift_applied > 0 ? ` · 🎁 <strong>${money(b.gift_applied, shop.currency)} gift card applied</strong>` : ''}${b.group_id ? ` · 👥 <strong>Group booking</strong>${b.room ? ` (${esc(b.room)})` : ''}` : ''}</p>
-    ${(() => { const col = collectedCents(b), price = b.price_cents || 0; return `<p style="margin-top:-2px;font-size:.9rem">💰 ${price > 0 && col >= price ? '<span class="tag completed">Paid in full ✓</span>' : `<strong>${money(col, shop.currency)}</strong> collected of <strong>${money(price, shop.currency)}</strong>${col < price ? ` · <span class="muted">${money(price - col, shop.currency)} remaining</span>` : ''}`}</p>` })()}
+    ${(() => { const col = collectedCents(b), price = b.price_cents || 0; return `<p style="margin-top:-2px;font-size:.9rem">💰 ${b.covered_by ? `<span class="tag completed">Covered by ${b.covered_by} ✓</span>` : (price > 0 && col >= price ? '<span class="tag completed">Paid in full ✓</span>' : `<strong>${money(col, shop.currency)}</strong> collected of <strong>${money(price, shop.currency)}</strong>${col < price ? ` · <span class="muted">${money(price - col, shop.currency)} remaining</span>` : ''}`)}</p>` })()}
     ${['confirmed', 'pending_payment', 'completed'].includes(b.status) ? `<div class="inline" style="gap:8px;margin:0 0 14px;flex-wrap:wrap">
       <a class="btn sm gold" href="/dashboard/bookings/${b.id}/pay">💳 Payments — record cash / take card</a>
       <a class="btn ghost sm" href="/dashboard/bookings/${b.id}/invoice?type=tax" target="_blank">🧾 Invoice</a>
@@ -892,8 +894,12 @@ app.get('/bookings/:id/pay', async (c) => {
   const cur = shop.currency
   const depositPaid = (b.stripe_charge_id && !b.refunded_at) ? (b.deposit_cents || 0) : 0
   const pays = await paymentsFor(db, b.id)
-  const paid = collectedCents(b), remaining = Math.max(0, (b.price_cents || 0) - paid)
+  const paid = collectedCents(b), remaining = b.covered_by ? 0 : Math.max(0, (b.price_cents || 0) - paid)
   const saved = c.req.query('saved')
+  const perr = c.req.query('perr')
+  // Prepaid options: a package code, or the client's active membership.
+  const member = b.covered_by ? null : await activeMembership(db, shop.id, b.client_id, b.customer_email)
+  const memberHasSession = member && (member.included_sessions - member.sessions_used) > 0
 
   // Collected breakdown: the online deposit (if charged) + each recorded payment.
   const collectedRows = [
@@ -917,12 +923,25 @@ app.get('/bookings/:id/pay', async (c) => {
         <tr><td class="muted">Price</td><td style="text-align:right" colspan="2">${money(b.price_cents || 0, cur)}</td></tr>
         ${collectedRows}
         ${tipsTotal > 0 ? `<tr><td class="muted">Tips 💜</td><td style="text-align:right" colspan="2">${money(tipsTotal, cur)}</td></tr>` : ''}
-        <tr><td style="font-weight:700;padding-top:8px;border-top:1px solid var(--line)">${remaining > 0 ? 'Remaining' : 'Status'}</td><td style="text-align:right;font-weight:700;padding-top:8px;border-top:1px solid var(--line)" colspan="2">${remaining > 0 ? money(remaining, cur) : '<span class="tag completed">Paid in full ✓</span>'}</td></tr>
+        <tr><td style="font-weight:700;padding-top:8px;border-top:1px solid var(--line)">${remaining > 0 ? 'Remaining' : 'Status'}</td><td style="text-align:right;font-weight:700;padding-top:8px;border-top:1px solid var(--line)" colspan="2">${b.covered_by ? `<span class="tag completed">Covered by ${b.covered_by} ✓</span>` : (remaining > 0 ? money(remaining, cur) : '<span class="tag completed">Paid in full ✓</span>')}</td></tr>
       </table>
     </div>
 
+    ${!b.covered_by ? `<div class="card" style="padding:20px;max-width:460px;margin-top:16px">
+      <h3 style="margin-top:0">🎟️ Prepaid</h3>
+      ${perr ? `<div class="notice err" style="margin:0 0 10px">${esc(decodeURIComponent(perr).slice(0, 160))}</div>` : ''}
+      ${memberHasSession ? `<form method="post" action="/dashboard/bookings/${b.id}/use-membership" style="margin-bottom:10px">
+        <p style="margin:0 0 6px">⭐ <strong>${esc(b.customer_name)}</strong> is a member — ${member.included_sessions - member.sessions_used} included session(s) left this period.</p>
+        <button class="btn">Use 1 included session (covers this booking)</button></form>` : (member ? `<p class="muted" style="font-size:.85rem;margin:0 0 10px">⭐ Member${member.discount_pct ? ` — ${member.discount_pct}% off applies` : ''} (no included sessions left this period).</p>` : '')}
+      <form method="post" action="/dashboard/bookings/${b.id}/redeem-package" class="inline" style="gap:8px">
+        <input name="code" placeholder="Package code" style="font-family:ui-monospace,monospace;flex:1;min-width:160px" required>
+        <button class="btn ghost">Redeem session</button>
+      </form>
+      <p class="muted" style="font-size:.78rem;margin:8px 0 0">Uses one session from a prepaid package — covers this appointment.</p>
+    </div>` : ''}
+
     <div class="card" style="padding:20px;max-width:460px;margin-top:16px">
-      <h3 style="margin-top:0">💵 Record a payment</h3>
+      <h3 style="margin-top:0">💵 Record a payment${b.covered_by ? ' / tip' : ''}</h3>
       <p class="muted" style="font-size:.85rem;margin-top:0">Someone paid in person? Record it here — cash, an external card machine, or a bank transfer.</p>
       <form method="post" action="/dashboard/bookings/${b.id}/pay/record">
         <div class="row">
@@ -974,6 +993,37 @@ app.post('/bookings/:id/pay/:pid/delete', async (c) => {
     await db.prepare('UPDATE bookings SET paid_cents = MAX(0, COALESCE(paid_cents,0) - ?) WHERE id=?').bind(p.amount_cents, id).run()
   }
   return c.redirect(`/dashboard/bookings/${id}/pay`)
+})
+
+// Redeem one session from a prepaid package to cover this booking.
+app.post('/bookings/:id/redeem-package', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
+  const b = await db.prepare('SELECT id, covered_by FROM bookings WHERE id=? AND shop_id=?').bind(id, shop.id).first()
+  if (!b) return c.redirect('/dashboard/bookings')
+  const perr = m => c.redirect(`/dashboard/bookings/${id}/pay?perr=${encodeURIComponent(m)}`)
+  if (b.covered_by) return c.redirect(`/dashboard/bookings/${id}/pay`)
+  const f = await c.req.parseBody()
+  const pkg = await findClientPackage(db, shop.id, (f.code || '').toString())
+  const st = packageUsable(pkg, Math.floor(Date.now() / 1000))
+  if (!st.ok) return perr(st.reason === 'expired' ? 'That package has expired.' : (st.reason === 'used_up' ? 'That package has no sessions left.' : 'Package code not found or not active.'))
+  const ok = await redeemPackageSession(db, pkg, id)
+  return c.redirect(`/dashboard/bookings/${id}/pay${ok ? '?saved=1' : '?perr=' + encodeURIComponent('Could not redeem — try again.')}`)
+})
+
+// Use one of the client's included membership sessions to cover this booking.
+app.post('/bookings/:id/use-membership', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), id = c.req.param('id')
+  const b = await db.prepare('SELECT id, covered_by, client_id, customer_email FROM bookings WHERE id=? AND shop_id=?').bind(id, shop.id).first()
+  if (!b || b.covered_by) return c.redirect(`/dashboard/bookings/${id}/pay`)
+  const m = await activeMembership(db, shop.id, b.client_id, b.customer_email)
+  if (m && (m.included_sessions - m.sessions_used) > 0) {
+    const res = await db.prepare("UPDATE memberships SET sessions_used = sessions_used + 1 WHERE id=? AND sessions_used < included_sessions").bind(m.id).run()
+    if (res.meta && res.meta.changes) {
+      await db.prepare("UPDATE bookings SET covered_by='membership' WHERE id=?").bind(id).run()
+      return c.redirect(`/dashboard/bookings/${id}/pay?saved=1`)
+    }
+  }
+  return c.redirect(`/dashboard/bookings/${id}/pay?perr=${encodeURIComponent('No included sessions left this period.')}`)
 })
 
 app.post('/bookings/:id/pay', async (c) => {
@@ -2230,6 +2280,128 @@ app.post('/clients/:id/delete', async (c) => {
   return c.redirect('/dashboard/clients')
 })
 
+// ─── Packages & memberships (owner) ──────────────────────────────────────────
+app.get('/packages', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), cur = shop.currency
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
+  const connected = !!(c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled)
+  const services = (await db.prepare('SELECT id,name FROM services WHERE shop_id=? AND is_active=1 ORDER BY sort_order').bind(shop.id).all()).results || []
+  const pkgs = (await db.prepare('SELECT * FROM packages WHERE shop_id=? ORDER BY created_at DESC').bind(shop.id).all()).results || []
+  const plans = (await db.prepare('SELECT * FROM membership_plans WHERE shop_id=? ORDER BY created_at DESC').bind(shop.id).all()).results || []
+  const sold = (await db.prepare("SELECT * FROM client_packages WHERE shop_id=? AND status IN ('active','used') ORDER BY created_at DESC LIMIT 200").bind(shop.id).all()).results || []
+  const members = (await db.prepare("SELECT m.*, p.name plan_name FROM memberships m LEFT JOIN membership_plans p ON p.id=m.plan_id WHERE m.shop_id=? AND m.status IN ('active','past_due') ORDER BY m.created_at DESC LIMIT 200").bind(shop.id).all()).results || []
+  const saved = c.req.query('saved')
+
+  return shell(c, 'packages', 'Packages', `
+    <h2>🎟️ Packages &amp; memberships</h2>
+    <p class="muted" style="margin-top:-6px">Sell prepaid session bundles and recurring memberships — paid into your Stripe, redeemed at the shop. Recurring revenue Fresha charges extra for.</p>
+    ${saved ? '<div class="notice ok" style="margin-bottom:12px">Saved ✓</div>' : ''}
+    ${!connected ? '<div class="notice err" style="margin-bottom:12px">⚠️ Connect Stripe (Settings) to sell these online. Demo shops can preview without it.</div>' : ''}
+
+    <div class="grid g2" style="align-items:start">
+      <div class="card" style="padding:22px">
+        <h3 style="margin-top:0">Prepaid packages</h3>
+        <form method="post" action="/dashboard/packages/new" style="margin-bottom:14px">
+          <div class="field"><label>Name</label><input name="name" required placeholder="5-pack — 60min massage"></div>
+          <div class="row">
+            <div class="field" style="flex:0 0 110px"><label>Sessions</label><input type="number" name="sessions" value="5" min="1" required></div>
+            <div class="field"><label>Price (${cur.toUpperCase()})</label><input type="number" name="price" value="500" min="1" required></div>
+            <div class="field" style="flex:0 0 120px"><label>Valid (days)</label><input type="number" name="expiry_days" value="365" min="1"></div>
+          </div>
+          <div class="field"><label>Service <span class="muted">(optional)</span></label><select name="service_id"><option value="">Any service</option>${services.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
+          <button class="btn sm">Add package</button>
+        </form>
+        ${pkgs.length ? pkgs.map(p => `<div class="inline" style="justify-content:space-between;border-top:1px solid var(--line);padding:8px 0">
+          <span>${p.is_active ? '' : '🚫 '}<strong>${esc(p.name)}</strong> <span class="muted">· ${p.sessions} × · ${money(p.price_cents, cur)}</span></span>
+          <form method="post" action="/dashboard/packages/${p.id}/toggle"><button class="btn ghost sm">${p.is_active ? 'Deactivate' : 'Activate'}</button></form>
+        </div>`).join('') : '<p class="muted">No packages yet.</p>'}
+      </div>
+
+      <div class="card" style="padding:22px">
+        <h3 style="margin-top:0">Memberships</h3>
+        <form method="post" action="/dashboard/memberships/new" style="margin-bottom:14px">
+          <div class="field"><label>Name</label><input name="name" required placeholder="Monthly Wellness"></div>
+          <div class="row">
+            <div class="field"><label>Price (${cur.toUpperCase()})</label><input type="number" name="price" value="99" min="1" required></div>
+            <div class="field" style="flex:0 0 120px"><label>Billing</label><select name="interval"><option value="month">Monthly</option><option value="year">Yearly</option></select></div>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:0 0 140px"><label>Included sessions</label><input type="number" name="included_sessions" value="1" min="0"></div>
+            <div class="field" style="flex:0 0 120px"><label>Discount %</label><input type="number" name="discount_pct" value="10" min="0" max="100"></div>
+          </div>
+          <div class="field"><label>Benefits <span class="muted">(optional)</span></label><input name="benefits" placeholder="1 massage/mo + 10% off extras"></div>
+          <button class="btn sm">Add plan</button>
+        </form>
+        ${plans.length ? plans.map(p => `<div class="inline" style="justify-content:space-between;border-top:1px solid var(--line);padding:8px 0">
+          <span>${p.is_active ? '' : '🚫 '}<strong>${esc(p.name)}</strong> <span class="muted">· ${money(p.price_cents, cur)}/${p.interval} · ${p.included_sessions}×, ${p.discount_pct}% off</span></span>
+          <form method="post" action="/dashboard/memberships/${p.id}/toggle"><button class="btn ghost sm">${p.is_active ? 'Deactivate' : 'Activate'}</button></form>
+        </div>`).join('') : '<p class="muted">No plans yet.</p>'}
+      </div>
+    </div>
+
+    ${(pkgs.length || plans.length) ? `<div class="card" style="padding:16px 18px;margin-top:16px"><label>Share your buy page</label>
+      <div class="inline"><input value="${esc(base)}/${shop.slug}/packages" readonly onclick="this.select()" style="flex:1;min-width:220px;font-size:.85rem"><a class="btn ghost sm" href="${esc(base)}/${shop.slug}/packages" target="_blank">Open →</a></div></div>` : ''}
+
+    <h3 style="margin-top:22px">Sold packages</h3>
+    ${sold.length ? `<div class="card" style="padding:6px 16px;overflow-x:auto"><table>
+      <tr><th>Code</th><th>Package</th><th>Customer</th><th>Remaining</th><th>Expires</th><th></th></tr>
+      ${sold.map(s => `<tr><td style="font-family:ui-monospace,monospace">${esc(s.code)}</td><td>${esc(s.name)}</td>
+        <td>${esc(s.purchaser_name || '')}<div class="muted" style="font-size:.78rem">${esc(s.purchaser_email || '')}</div></td>
+        <td><strong>${s.sessions_total - s.sessions_used}</strong> / ${s.sessions_total}</td>
+        <td class="muted" style="font-size:.82rem">${s.expires_at ? esc(formatBookingTime(s.expires_at, shop.timezone).split(',').slice(0, 2).join(',')) : '—'}</td>
+        <td><form method="post" action="/dashboard/packages/sold/${s.id}/void" onsubmit="return confirm('Void this package?')"><button class="btn danger sm">Void</button></form></td></tr>`).join('')}
+    </table></div>` : '<p class="muted">None sold yet.</p>'}
+
+    <h3 style="margin-top:22px">Members</h3>
+    ${members.length ? `<div class="card" style="padding:6px 16px;overflow-x:auto"><table>
+      <tr><th>Member</th><th>Plan</th><th>Status</th><th>Renews</th><th></th></tr>
+      ${members.map(m => `<tr><td>${esc(m.name || '')}<div class="muted" style="font-size:.78rem">${esc(m.email || '')}</div></td>
+        <td>${esc(m.plan_name || '')}</td><td>${giftStatusTag(m.status === 'past_due' ? 'pending_payment' : (m.status === 'active' ? 'active' : 'void'))}</td>
+        <td class="muted" style="font-size:.82rem">${m.current_period_end ? esc(formatBookingTime(m.current_period_end, shop.timezone).split(',').slice(0, 2).join(',')) : '—'}</td>
+        <td>${m.stripe_subscription_id ? `<form method="post" action="/dashboard/memberships/sub/${m.id}/cancel" onsubmit="return confirm('Cancel this membership at period end?')"><button class="btn ghost sm">Cancel</button></form>` : ''}</td></tr>`).join('')}
+    </table></div>` : '<p class="muted">No members yet.</p>'}
+  `)
+})
+
+app.post('/packages/new', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), f = await c.req.parseBody()
+  const name = (f.name || '').toString().trim(); if (!name) return c.redirect('/dashboard/packages')
+  await db.prepare('INSERT INTO packages (id, shop_id, name, service_id, sessions, price_cents, expiry_days) VALUES (?,?,?,?,?,?,?)')
+    .bind(genId(), shop.id, name, (f.service_id || '').toString() || null, Math.max(1, parseInt(f.sessions) || 1), Math.max(0, Math.round((parseFloat(f.price) || 0) * 100)), Math.max(1, parseInt(f.expiry_days) || 365)).run()
+  return c.redirect('/dashboard/packages?saved=1')
+})
+app.post('/packages/:id/toggle', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  await db.prepare('UPDATE packages SET is_active = 1 - is_active WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).run()
+  return c.redirect('/dashboard/packages')
+})
+app.post('/packages/sold/:id/void', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  await db.prepare("UPDATE client_packages SET status='void' WHERE id=? AND shop_id=?").bind(c.req.param('id'), shop.id).run()
+  return c.redirect('/dashboard/packages')
+})
+app.post('/memberships/new', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), f = await c.req.parseBody()
+  const name = (f.name || '').toString().trim(); if (!name) return c.redirect('/dashboard/packages')
+  await db.prepare('INSERT INTO membership_plans (id, shop_id, name, price_cents, interval, discount_pct, included_sessions, benefits) VALUES (?,?,?,?,?,?,?,?)')
+    .bind(genId(), shop.id, name, Math.max(0, Math.round((parseFloat(f.price) || 0) * 100)), f.interval === 'year' ? 'year' : 'month', Math.max(0, Math.min(100, parseInt(f.discount_pct) || 0)), Math.max(0, parseInt(f.included_sessions) || 0), (f.benefits || '').toString().trim() || null).run()
+  return c.redirect('/dashboard/packages?saved=1')
+})
+app.post('/memberships/:id/toggle', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  await db.prepare('UPDATE membership_plans SET is_active = 1 - is_active WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).run()
+  return c.redirect('/dashboard/packages')
+})
+app.post('/memberships/sub/:id/cancel', async (c) => {
+  const db = c.env.DB, shop = c.get('shop')
+  const m = await db.prepare('SELECT * FROM memberships WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (m && m.stripe_subscription_id && c.env.STRIPE_SECRET_KEY && shop.stripe_account_id) {
+    try { await stripeClient(c.env.STRIPE_SECRET_KEY).cancelSubscription(m.stripe_subscription_id, { account: shop.stripe_account_id }) } catch (e) { console.error('cancel sub:', e.message) }
+    await db.prepare("UPDATE memberships SET status='canceled' WHERE id=?").bind(m.id).run()
+  }
+  return c.redirect('/dashboard/packages')
+})
+
 // ─── Reports ─────────────────────────────────────────────────────────────────
 app.get('/reports', async (c) => {
   const db = c.env.DB, shop = c.get('shop'), tz = shop.timezone, cur = shop.currency
@@ -2522,6 +2694,10 @@ app.get('/export/all.json', async (c) => {
     gift_cards: await grab('SELECT * FROM gift_cards WHERE shop_id=? ORDER BY created_at DESC'),
     gift_card_txns: (await db.prepare('SELECT tx.* FROM gift_card_txns tx JOIN gift_cards g ON g.id=tx.gift_card_id WHERE g.shop_id=? ORDER BY tx.created_at DESC').bind(shop.id).all()).results || [],
     payments: await grab('SELECT * FROM payments WHERE shop_id=? ORDER BY created_at DESC'),
+    packages: await grab('SELECT * FROM packages WHERE shop_id=?'),
+    client_packages: await grab('SELECT * FROM client_packages WHERE shop_id=? ORDER BY created_at DESC'),
+    membership_plans: await grab('SELECT * FROM membership_plans WHERE shop_id=?'),
+    memberships: await grab('SELECT * FROM memberships WHERE shop_id=? ORDER BY created_at DESC'),
   }
   return c.body(JSON.stringify(dump, null, 2), 200, {
     'Content-Type': 'application/json; charset=utf-8',

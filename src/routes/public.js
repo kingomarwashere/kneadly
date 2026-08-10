@@ -7,6 +7,7 @@ import { stripeClient } from '../lib/stripe.js'
 import { genId } from '../lib/auth.js'
 import { sendBookingEmails } from '../lib/email.js'
 import { generateGiftCode, findGiftCard, redeemableState } from '../lib/giftcard.js'
+import { generatePackageCode } from '../lib/prepaid.js'
 import { findOrCreateClient } from '../lib/clients.js'
 import { translate, translateAll } from '../lib/translate.js'
 import { loyaltyStatus } from '../lib/loyalty.js'
@@ -398,6 +399,147 @@ function giftCheckForm(shop, lang, result, code = '') {
     </form>`
 }
 
+// ─── Packages & memberships (buy) ────────────────────────────────────────────
+function stripeState(c, shop) {
+  const stripeReady = !!(c.env.STRIPE_SECRET_KEY && shop.stripe_account_id && shop.stripe_charges_enabled)
+  const isDemo = isDemoShop(shop.slug)
+  return { stripeReady, isDemo }
+}
+
+app.get('/:slug/packages', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published) return c.notFound()
+  const { stripeReady, isDemo } = stripeState(c, shop)
+  const cur = shop.currency
+  const packages = (await db.prepare('SELECT * FROM packages WHERE shop_id=? AND is_active=1 ORDER BY price_cents').bind(shop.id).all()).results || []
+  const plans = (await db.prepare('SELECT * FROM membership_plans WHERE shop_id=? AND is_active=1 ORDER BY price_cents').bind(shop.id).all()).results || []
+  const err = c.req.query('err')
+  if (!packages.length && !plans.length) {
+    return giftPage(c, shop, lang, { title: t(lang, 'pkg_nav'), inner: `<h1 style="margin:.3em 0">🎟️ ${esc(t(lang, 'pkg_nav'))}</h1><p class="muted">${esc(t(lang, 'pkg_none'))}</p>` })
+  }
+  const canBuy = stripeReady || isDemo
+  const pkgCard = p => `<div class="card" style="padding:20px;margin-bottom:12px">
+    <div class="inline" style="justify-content:space-between;align-items:baseline"><strong style="font-size:1.1rem">${esc(p.name)}</strong><span style="font-weight:700;color:var(--accent)">${money(p.price_cents, cur)}</span></div>
+    <div class="muted" style="font-size:.9rem;margin:4px 0 12px">${p.sessions} ${t(lang, 'pkg_sessions')}${p.expiry_days ? ` · ${t(lang, 'pkg_valid_days', { n: p.expiry_days })}` : ''}</div>
+    ${canBuy ? `<form method="post" action="/${shop.slug}/packages/buy"><input type="hidden" name="package_id" value="${p.id}">
+      <div class="row"><div class="field"><input name="buyer_name" placeholder="${esc(t(lang, 'gift_your_name'))}" required></div><div class="field"><input type="email" name="buyer_email" placeholder="${esc(t(lang, 'gift_your_email'))}" required></div></div>
+      <button class="btn gold" style="width:100%">${esc(isDemo && !stripeReady ? t(lang, 'gift_demo_btn') : t(lang, 'pkg_buy_btn'))}</button></form>` : `<p class="muted">${esc(t(lang, 'gift_unavailable'))}</p>`}
+  </div>`
+  const planCard = p => `<div class="card" style="padding:20px;margin-bottom:12px">
+    <div class="inline" style="justify-content:space-between;align-items:baseline"><strong style="font-size:1.1rem">${esc(p.name)}</strong><span style="font-weight:700;color:var(--accent)">${money(p.price_cents, cur)}/${t(lang, p.interval === 'year' ? 'pkg_year' : 'pkg_month')}</span></div>
+    <div class="muted" style="font-size:.9rem;margin:4px 0 8px">${[p.included_sessions ? t(lang, 'mem_included', { n: p.included_sessions }) : '', p.discount_pct ? t(lang, 'mem_discount', { n: p.discount_pct }) : ''].filter(Boolean).join(' · ')}</div>
+    ${p.benefits ? `<div style="font-size:.9rem;white-space:pre-wrap;margin-bottom:10px">${esc(p.benefits)}</div>` : ''}
+    ${stripeReady ? `<form method="post" action="/${shop.slug}/membership/subscribe"><input type="hidden" name="plan_id" value="${p.id}">
+      <div class="row"><div class="field"><input name="buyer_name" placeholder="${esc(t(lang, 'gift_your_name'))}" required></div><div class="field"><input type="email" name="buyer_email" placeholder="${esc(t(lang, 'gift_your_email'))}" required></div></div>
+      <button class="btn gold" style="width:100%">${esc(t(lang, 'mem_join_btn'))}</button></form>` : `<p class="muted">${esc(t(lang, 'mem_needs_stripe'))}</p>`}
+  </div>`
+  const inner = `
+    <h1 style="margin:.3em 0 .1em">🎟️ ${esc(t(lang, 'pkg_title'))}</h1>
+    <p class="muted" style="margin-top:0">${esc(t(lang, 'pkg_sub', { shop: shop.name }))}</p>
+    ${(isDemo && !stripeReady) ? `<div class="notice" style="margin:10px 0;background:#fdf7e8;color:#8a6414">🧪 ${esc(t(lang, 'gift_demo_note'))}</div>` : ''}
+    ${err ? `<div class="notice err" style="margin:10px 0">${esc(decodeURIComponent(err).slice(0, 200))}</div>` : ''}
+    ${packages.length ? `<h2 style="font-size:1.15rem;margin:18px 0 6px">${esc(t(lang, 'pkg_bundles'))}</h2>${packages.map(pkgCard).join('')}` : ''}
+    ${plans.length ? `<h2 style="font-size:1.15rem;margin:18px 0 6px">${esc(t(lang, 'mem_plans'))}</h2>${plans.map(planCard).join('')}` : ''}`
+  return giftPage(c, shop, lang, { title: t(lang, 'pkg_nav'), inner })
+})
+
+app.post('/:slug/packages/buy', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published) return c.notFound()
+  const { stripeReady, isDemo } = stripeState(c, shop)
+  const gerr = m => c.redirect(`/${shop.slug}/packages?err=${encodeURIComponent(m)}`)
+  const f = await c.req.parseBody()
+  const p = await db.prepare('SELECT * FROM packages WHERE id=? AND shop_id=? AND is_active=1').bind((f.package_id || '').toString(), shop.id).first()
+  if (!p) return gerr('Package not found.')
+  if (!stripeReady && !isDemo) return gerr(t(lang, 'gift_unavailable'))
+  const name = (f.buyer_name || '').toString().trim(), email = (f.buyer_email || '').toString().trim().toLowerCase()
+  if (!name || !email) return gerr('Please enter your name and email.')
+  const id = genId(), code = await generatePackageCode(db, shop.slug)
+  await db.prepare(`INSERT INTO client_packages (id, shop_id, package_id, name, service_id, code, sessions_total, price_cents, currency, status, purchaser_name, purchaser_email, lang)
+    VALUES (?,?,?,?,?,?,?,?,?, 'pending_payment', ?,?,?)`).bind(id, shop.id, p.id, p.name, p.service_id, code, p.sessions, p.price_cents, shop.currency, name, email, lang).run()
+  if (!stripeReady && isDemo) {
+    const now = Math.floor(Date.now() / 1000)
+    await db.prepare("UPDATE client_packages SET status='active', activated_at=?, expires_at=? WHERE id=?").bind(now, now + (p.expiry_days || 365) * 86400, id).run()
+    return c.redirect(`/${shop.slug}/packages/success/${id}`)
+  }
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
+  const fee = Math.max(0, Math.round(p.price_cents * 0.01))
+  try {
+    const session = await stripeClient(c.env.STRIPE_SECRET_KEY).createCheckoutSession({
+      mode: 'payment', success_url: `${base}/${shop.slug}/packages/success/${id}`, cancel_url: `${base}/${shop.slug}/packages`,
+      customer_email: email,
+      line_items: [{ quantity: 1, price_data: { currency: shop.currency, unit_amount: p.price_cents, product_data: { name: `${p.name} — ${shop.name}`, description: `${p.sessions} sessions` } } }],
+      payment_intent_data: fee > 0 ? { application_fee_amount: fee } : undefined,
+      metadata: { kind: 'package', client_package_id: id }, expires_at: Math.floor(Date.now() / 1000) + 1800,
+    }, { account: shop.stripe_account_id })
+    await db.prepare('UPDATE client_packages SET stripe_session_id=? WHERE id=?').bind(session.id, id).run()
+    return c.redirect(session.url)
+  } catch (e) { console.error('package stripe:', e.message); await db.prepare("UPDATE client_packages SET status='void' WHERE id=?").bind(id).run(); return gerr(e.message || 'Payment failed.') }
+})
+
+app.get('/:slug/packages/success/:id', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop) return c.notFound()
+  const cp = await db.prepare('SELECT * FROM client_packages WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (!cp) return c.notFound()
+  const active = cp.status === 'active'
+  const inner = `<div class="card" style="padding:30px;text-align:center;margin-top:16px">
+    <div style="font-size:2.4rem">🎟️</div><h1 style="margin:.2em 0">${esc(t(lang, 'pkg_success_head'))}</h1>
+    <p class="muted">${active ? esc(t(lang, 'pkg_success_sub', { shop: shop.name })) : esc(t(lang, 'gift_success_pending'))}</p>
+    ${active ? `<div style="border:2px dashed var(--accent);border-radius:14px;padding:18px;margin:16px auto 0;max-width:320px">
+      <div class="muted" style="font-size:.75rem;text-transform:uppercase">${esc(t(lang, 'gift_code'))}</div>
+      <div style="font-family:ui-monospace,monospace;font-size:1.4rem;font-weight:700">${esc(cp.code)}</div>
+      <div style="font-weight:700;margin-top:6px">${cp.sessions_total} ${esc(t(lang, 'pkg_sessions'))}</div></div>` : ''}
+    <p style="margin-top:22px"><a class="btn" href="/${shop.slug}">${esc(t(lang, 'back_to', { shop: shop.name }))}</a></p></div>`
+  return giftPage(c, shop, lang, { title: t(lang, 'pkg_success_head'), inner })
+})
+
+app.post('/:slug/membership/subscribe', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published) return c.notFound()
+  const { stripeReady } = stripeState(c, shop)
+  const gerr = m => c.redirect(`/${shop.slug}/packages?err=${encodeURIComponent(m)}`)
+  if (!stripeReady) return gerr(t(lang, 'mem_needs_stripe'))
+  const f = await c.req.parseBody()
+  const plan = await db.prepare('SELECT * FROM membership_plans WHERE id=? AND shop_id=? AND is_active=1').bind((f.plan_id || '').toString(), shop.id).first()
+  if (!plan) return gerr('Plan not found.')
+  const name = (f.buyer_name || '').toString().trim(), email = (f.buyer_email || '').toString().trim().toLowerCase()
+  if (!name || !email) return gerr('Please enter your name and email.')
+  const clientId = await findOrCreateClient(db, shop.id, { name, email })
+  const id = genId()
+  await db.prepare(`INSERT INTO memberships (id, shop_id, plan_id, client_id, name, email, lang, status, discount_pct, included_sessions)
+    VALUES (?,?,?,?,?,?,?, 'pending', ?, ?)`).bind(id, shop.id, plan.id, clientId, name, email, lang, plan.discount_pct, plan.included_sessions).run()
+  const base = c.env.BASE_URL || 'https://alisa.bored.investments'
+  try {
+    const session = await stripeClient(c.env.STRIPE_SECRET_KEY).createCheckoutSession({
+      mode: 'subscription', success_url: `${base}/${shop.slug}/membership/success/${id}`, cancel_url: `${base}/${shop.slug}/packages`,
+      customer_email: email,
+      line_items: [{ quantity: 1, price_data: { currency: shop.currency, unit_amount: plan.price_cents, recurring: { interval: plan.interval === 'year' ? 'year' : 'month' }, product_data: { name: `${plan.name} — ${shop.name}` } } }],
+      subscription_data: { application_fee_percent: 1, metadata: { membership_id: id, shop_id: shop.id } },
+      metadata: { kind: 'membership', membership_id: id },
+    }, { account: shop.stripe_account_id })
+    await db.prepare('UPDATE memberships SET stripe_customer_id=? WHERE id=?').bind(session.customer || null, id).run()
+    return c.redirect(session.url)
+  } catch (e) { console.error('membership stripe:', e.message); await db.prepare("UPDATE memberships SET status='canceled' WHERE id=?").bind(id).run(); return gerr(e.message || 'Subscription failed.') }
+})
+
+app.get('/:slug/membership/success/:id', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop) return c.notFound()
+  const m = await db.prepare('SELECT * FROM memberships WHERE id=? AND shop_id=?').bind(c.req.param('id'), shop.id).first()
+  if (!m) return c.notFound()
+  const inner = `<div class="card" style="padding:30px;text-align:center;margin-top:16px">
+    <div style="font-size:2.4rem">⭐</div><h1 style="margin:.2em 0">${esc(t(lang, 'mem_success_head'))}</h1>
+    <p class="muted">${m.status === 'active' ? esc(t(lang, 'mem_success_sub', { shop: shop.name })) : esc(t(lang, 'mem_success_pending'))}</p>
+    <p style="margin-top:22px"><a class="btn" href="/${shop.slug}">${esc(t(lang, 'back_to', { shop: shop.name }))}</a></p></div>`
+  return giftPage(c, shop, lang, { title: t(lang, 'mem_success_head'), inner })
+})
+
 // ─── Shop public page ────────────────────────────────────────────────────────
 app.get('/:slug', async (c) => {
   const db = c.env.DB
@@ -409,6 +551,7 @@ app.get('/:slug', async (c) => {
     'SELECT * FROM services WHERE shop_id = ? AND is_active = 1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
   const staff = (await db.prepare(
     'SELECT * FROM staff WHERE shop_id = ? AND is_active = 1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  const hasPlans = !!(await db.prepare("SELECT 1 FROM packages WHERE shop_id=? AND is_active=1 UNION SELECT 1 FROM membership_plans WHERE shop_id=? AND is_active=1 LIMIT 1").bind(shop.id, shop.id).first())
 
   // Auto-translate owner content into the customer's language (cached).
   await Promise.all([
@@ -459,7 +602,10 @@ app.get('/:slug', async (c) => {
       <h1 style="color:#fff;margin:.15em 0 .1em">${esc(shop.name)}</h1>
       ${shop.tagline ? `<p style="color:#d9ede9;margin:0 0 6px;font-size:1.05rem">${esc(shop.tagline)}</p>` : ''}
       <p style="color:#a7d3ce;margin:0;font-size:.9rem">${[addr, shop.phone].filter(Boolean).map(esc).join(' · ')}</p>
-      ${(shop.gift_cards_enabled && (shop.stripe_charges_enabled || isDemoShop(shop.slug))) ? `<a href="/${shop.slug}/gift" style="display:inline-block;margin-top:14px;background:rgba(255,255,255,.16);color:#fff;text-decoration:none;font-weight:600;padding:9px 16px;border-radius:999px;font-size:.9rem">🎁 ${esc(t(lang, 'gift_buy_title'))}</a>` : ''}
+      <div class="inline" style="gap:8px;margin-top:14px">
+      ${(shop.gift_cards_enabled && (shop.stripe_charges_enabled || isDemoShop(shop.slug))) ? `<a href="/${shop.slug}/gift" style="display:inline-block;background:rgba(255,255,255,.16);color:#fff;text-decoration:none;font-weight:600;padding:9px 16px;border-radius:999px;font-size:.9rem">🎁 ${esc(t(lang, 'gift_buy_title'))}</a>` : ''}
+      ${hasPlans ? `<a href="/${shop.slug}/packages" style="display:inline-block;background:rgba(255,255,255,.16);color:#fff;text-decoration:none;font-weight:600;padding:9px 16px;border-radius:999px;font-size:.9rem">🎟️ ${esc(t(lang, 'pkg_nav'))}</a>` : ''}
+      </div>
     </div>
   </div>
 

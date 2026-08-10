@@ -280,6 +280,79 @@ CREATE TABLE IF NOT EXISTS payments (
 CREATE INDEX IF NOT EXISTS idx_payments_booking ON payments(booking_id);
 CREATE INDEX IF NOT EXISTS idx_payments_shop ON payments(shop_id, created_at);
 
+-- Prepaid session bundles a shop offers (e.g. "5 x 60min massage").
+CREATE TABLE IF NOT EXISTS packages (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  service_id TEXT,               -- null = any service
+  sessions INTEGER NOT NULL,
+  price_cents INTEGER NOT NULL,
+  expiry_days INTEGER NOT NULL DEFAULT 365,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_packages_shop ON packages(shop_id);
+
+-- A package a customer bought (tracks remaining sessions).
+CREATE TABLE IF NOT EXISTS client_packages (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  package_id TEXT,
+  client_id TEXT,
+  name TEXT NOT NULL,
+  service_id TEXT,
+  code TEXT NOT NULL UNIQUE,
+  sessions_total INTEGER NOT NULL,
+  sessions_used INTEGER NOT NULL DEFAULT 0,
+  price_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending_payment', -- pending_payment | active | used | void
+  purchaser_name TEXT, purchaser_email TEXT, lang TEXT,
+  stripe_session_id TEXT, stripe_payment_intent_id TEXT, stripe_charge_id TEXT,
+  activated_at INTEGER, expires_at INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_clientpkg_shop ON client_packages(shop_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_clientpkg_code ON client_packages(code);
+
+-- Membership plans a shop offers (recurring).
+CREATE TABLE IF NOT EXISTS membership_plans (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  price_cents INTEGER NOT NULL,
+  interval TEXT NOT NULL DEFAULT 'month',  -- month | year
+  discount_pct INTEGER NOT NULL DEFAULT 0,
+  included_sessions INTEGER NOT NULL DEFAULT 0,  -- included per period
+  benefits TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_memplans_shop ON membership_plans(shop_id);
+
+-- A customer's active membership (Stripe subscription).
+CREATE TABLE IF NOT EXISTS memberships (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  plan_id TEXT,
+  client_id TEXT,
+  name TEXT, email TEXT, lang TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending | active | past_due | canceled
+  discount_pct INTEGER NOT NULL DEFAULT 0,
+  included_sessions INTEGER NOT NULL DEFAULT 0,
+  sessions_used INTEGER NOT NULL DEFAULT 0,  -- this period
+  stripe_customer_id TEXT, stripe_subscription_id TEXT,
+  current_period_end INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_memberships_shop ON memberships(shop_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_memberships_sub ON memberships(stripe_subscription_id);
+
 -- Days a therapist is off (holidays, sick days) — blocks that whole date
 CREATE TABLE IF NOT EXISTS time_off (
   id TEXT PRIMARY KEY,
@@ -323,6 +396,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   loyalty_applied INTEGER NOT NULL DEFAULT 0,  -- loyalty discount applied to this booking (cents)
   gift_applied INTEGER NOT NULL DEFAULT 0,     -- gift-card credit redeemed toward this booking (cents)
   gift_card_id TEXT,                           -- gift card redeemed on this booking (nullable)
+  covered_by TEXT,                             -- 'package' | 'membership' when a prepaid session covers this booking
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,
   FOREIGN KEY (service_id) REFERENCES services(id),

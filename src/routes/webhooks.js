@@ -51,6 +51,34 @@ app.post('/stripe', async (c) => {
       return c.json({ ok: true })
     }
 
+    // Prepaid package purchase → activate + set expiry.
+    if (session.metadata?.kind === 'package') {
+      const cpId = session.metadata.client_package_id
+      const cp = cpId && await db.prepare('SELECT * FROM client_packages WHERE id=?').bind(cpId).first()
+      if (cp && cp.status === 'pending_payment') {
+        const pkg = await db.prepare('SELECT expiry_days FROM packages WHERE id=?').bind(cp.package_id).first()
+        const now = Math.floor(Date.now() / 1000), expires = now + ((pkg?.expiry_days || 365) * 86400)
+        let chargeId = null
+        try { chargeId = (await stripeClient(c.env.STRIPE_SECRET_KEY).retrievePaymentIntent(session.payment_intent, { account })).latest_charge } catch (e) { console.error('pkg charge:', e.message) }
+        await db.prepare("UPDATE client_packages SET status='active', activated_at=?, expires_at=?, stripe_session_id=?, stripe_payment_intent_id=?, stripe_charge_id=? WHERE id=?")
+          .bind(now, expires, session.id, session.payment_intent, chargeId, cpId).run()
+      }
+      return c.json({ ok: true })
+    }
+
+    // Membership subscription started → activate + record subscription.
+    if (session.metadata?.kind === 'membership') {
+      const mId = session.metadata.membership_id
+      const m = mId && await db.prepare('SELECT * FROM memberships WHERE id=?').bind(mId).first()
+      if (m && m.status !== 'active') {
+        let periodEnd = null
+        try { periodEnd = (await stripeClient(c.env.STRIPE_SECRET_KEY).retrieveSubscription(session.subscription, { account })).current_period_end } catch (e) { console.error('sub retrieve:', e.message) }
+        await db.prepare("UPDATE memberships SET status='active', stripe_subscription_id=?, stripe_customer_id=?, current_period_end=?, sessions_used=0 WHERE id=?")
+          .bind(session.subscription || null, session.customer || m.stripe_customer_id || null, periodEnd, mId).run()
+      }
+      return c.json({ ok: true })
+    }
+
     const bookingId = session.metadata?.booking_id
     if (!bookingId) return c.json({ ok: true })
     const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first()
@@ -102,6 +130,23 @@ app.post('/stripe', async (c) => {
     } else if (meta.booking_id) {
       await db.prepare("UPDATE bookings SET status='cancelled' WHERE id=? AND status='pending_payment'").bind(meta.booking_id).run()
     }
+  }
+
+  // Membership subscription lifecycle.
+  if (event.type === 'customer.subscription.updated') {
+    const sub = event.data.object
+    const status = ['active', 'trialing'].includes(sub.status) ? 'active'
+      : (['past_due', 'unpaid'].includes(sub.status) ? 'past_due' : (sub.status === 'canceled' ? 'canceled' : 'active'))
+    await db.prepare('UPDATE memberships SET status=?, current_period_end=? WHERE stripe_subscription_id=?')
+      .bind(status, sub.current_period_end || null, sub.id).run()
+  }
+  if (event.type === 'customer.subscription.deleted') {
+    await db.prepare("UPDATE memberships SET status='canceled' WHERE stripe_subscription_id=?").bind(event.data.object.id).run()
+  }
+  // Each successful renewal resets the period's included sessions.
+  if (event.type === 'invoice.paid') {
+    const subId = event.data.object.subscription
+    if (subId) await db.prepare("UPDATE memberships SET sessions_used=0, status='active' WHERE stripe_subscription_id=?").bind(subId).run()
   }
 
   return c.json({ ok: true })
