@@ -1,6 +1,6 @@
 // Shared layout + design system for Alisa
 
-import { t, langSwitcher } from './i18n.js'
+import { t, langSwitcher, dirFor } from './i18n.js'
 
 export const money = (cents, currency = 'aud') =>
   new Intl.NumberFormat('en-AU', { style: 'currency', currency: currency.toUpperCase() }).format((cents || 0) / 100)
@@ -72,7 +72,7 @@ export function layout(title, body, opts = {}) {
   const desc = opts.description || 'Online booking for massage & bodywork. Fill your calendar, take deposits, and let clients book from Google in seconds.'
   const accent = opts.accent
   const lang = opts.lang || 'en'
-  return `<!DOCTYPE html><html lang="${lang}"><head>
+  return `<!DOCTYPE html><html lang="${lang}" dir="${dirFor(lang)}"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(desc)}">
