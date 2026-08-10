@@ -2248,6 +2248,36 @@ app.get('/reports', async (c) => {
   const revBy = Object.fromEntries(rev.map(r => [r.staff_id, r]))
   const tipsBy = Object.fromEntries(tips.map(r => [r.staff_id, r.tips]))
 
+  // ── Analytics ──
+  const sum = await db.prepare(`SELECT COUNT(*) total,
+      COALESCE(SUM(CASE WHEN status IN ('confirmed','completed') THEN 1 ELSE 0 END),0) done_ct,
+      COALESCE(SUM(CASE WHEN status='no_show' THEN 1 ELSE 0 END),0) noshow,
+      COALESCE(SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END),0) cancelled,
+      COALESCE(SUM(CASE WHEN status IN ('confirmed','completed') THEN price_cents ELSE 0 END),0) booked,
+      COALESCE(SUM(paid_cents),0) paid,
+      COALESCE(SUM(CASE WHEN stripe_charge_id IS NOT NULL AND refunded_at IS NULL THEN deposit_cents ELSE 0 END),0) deposits
+    FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<?`).bind(shop.id, fromU, toU).first()
+  const collected = (sum.paid || 0) + (sum.deposits || 0)
+  const attended = (sum.done_ct || 0) + (sum.noshow || 0)
+  const noShowRate = attended ? Math.round((sum.noshow / attended) * 100) : 0
+  const avgValue = sum.done_ct ? Math.round(sum.booked / sum.done_ct) : 0
+  const distinct = await db.prepare(`SELECT COUNT(DISTINCT COALESCE(client_id, customer_email, customer_name)) c FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? AND status IN ('confirmed','completed')`).bind(shop.id, fromU, toU).first()
+  const returning = await db.prepare(`SELECT COUNT(DISTINCT r.client_id) c FROM bookings r WHERE r.shop_id=? AND r.start_time>=? AND r.start_time<? AND r.client_id IS NOT NULL AND EXISTS (SELECT 1 FROM bookings o WHERE o.client_id=r.client_id AND o.start_time < ?)`).bind(shop.id, fromU, toU, fromU).first()
+  const repeatRate = distinct.c ? Math.round((returning.c / distinct.c) * 100) : 0
+  const topSvc = (await db.prepare(`SELECT service_name, COUNT(*) n, COALESCE(SUM(price_cents),0) rev FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? AND status IN ('confirmed','completed') GROUP BY service_name ORDER BY rev DESC LIMIT 6`).bind(shop.id, fromU, toU).all()).results || []
+  const topCli = (await db.prepare(`SELECT customer_name, COUNT(*) n, COALESCE(SUM(price_cents),0) rev FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? AND status IN ('confirmed','completed') GROUP BY COALESCE(client_id, customer_email, customer_name) ORDER BY rev DESC LIMIT 6`).bind(shop.id, fromU, toU).all()).results || []
+  const days = Math.round((toU - fromU) / 86400)
+  const byDay = days <= 92 ? (await db.prepare(`SELECT CAST((start_time - ?) / 86400 AS INTEGER) d, COALESCE(SUM(CASE WHEN status IN ('confirmed','completed') THEN price_cents ELSE 0 END),0) rev FROM bookings WHERE shop_id=? AND start_time>=? AND start_time<? GROUP BY d`).bind(fromU, shop.id, fromU, toU).all()).results || [] : []
+  const dayRev = {}; byDay.forEach(r => dayRev[r.d] = r.rev)
+  const maxRev = Math.max(1, ...Object.values(dayRev))
+  const bars = days <= 92 ? Array.from({ length: days }, (_, i) => {
+    const r = dayRev[i] || 0, h = Math.round((r / maxRev) * 100)
+    const d = new Date((fromU + i * 86400) * 1000)
+    return `<div title="${money(r, cur)}" style="flex:1;min-width:2px;display:flex;flex-direction:column;justify-content:flex-end"><div style="height:${h}%;background:var(--accent);border-radius:2px 2px 0 0;min-height:${r ? 2 : 0}px"></div></div>`
+  }).join('') : ''
+  const kpi = (label, val) => `<div class="card" style="padding:14px 16px"><div class="muted" style="font-size:.78rem">${label}</div><div class="stat" style="font-size:1.4rem">${val}</div></div>`
+  const topList = (title, rows) => `<div><h3 style="margin:0 0 8px">${title}</h3><div class="card" style="padding:6px 16px">${rows.length ? `<table>${rows.map(r => `<tr><td>${esc(r.service_name || r.customer_name || '—')}</td><td style="text-align:center" class="muted">${r.n}</td><td style="text-align:right"><strong>${money(r.rev, cur)}</strong></td></tr>`).join('')}</table>` : '<p class="muted" style="padding:8px 0">No data.</p>'}</div></div>`
+
   let tRev = 0, tComm = 0, tTips = 0, tN = 0
   const rows = staff.map(s => {
     const r = revBy[s.id] || { n: 0, revenue: 0 }
@@ -2274,10 +2304,29 @@ app.get('/reports', async (c) => {
       <span class="muted" style="font-size:.82rem">Bookings dated in this range (confirmed &amp; completed).</span>
     </form>
 
+    <div class="grid g3" style="margin-bottom:12px">
+      ${kpi('Booked revenue', money(sum.booked, cur))}
+      ${kpi('Collected', money(collected, cur))}
+      ${kpi('Appointments', sum.done_ct)}
+    </div>
+    <div class="grid g3" style="margin-bottom:12px">
+      ${kpi('Avg booking value', money(avgValue, cur))}
+      ${kpi('No-show rate', noShowRate + '%')}
+      ${kpi('Returning clients', repeatRate + '%')}
+    </div>
     <div class="grid g3" style="margin-bottom:18px">
-      <div class="card" style="padding:16px"><div class="muted" style="font-size:.8rem">Service revenue</div><div class="stat" style="font-size:1.5rem">${money(tRev, cur)}</div></div>
-      <div class="card" style="padding:16px"><div class="muted" style="font-size:.8rem">Appointments</div><div class="stat" style="font-size:1.5rem">${tN}</div></div>
-      <div class="card" style="padding:16px"><div class="muted" style="font-size:.8rem">Tips collected 💜</div><div class="stat" style="font-size:1.5rem">${money(tTips, cur)}</div></div>
+      ${kpi('Tips 💜', money(tTips, cur))}
+      ${kpi('Cancellations', sum.cancelled)}
+      ${kpi('No-shows', sum.noshow)}
+    </div>
+
+    ${bars ? `<h3>Revenue by day</h3>
+    <div class="card" style="padding:16px"><div style="display:flex;align-items:flex-end;gap:2px;height:110px">${bars}</div>
+      <div class="muted" style="font-size:.75rem;display:flex;justify-content:space-between;margin-top:6px"><span>${from}</span><span>${to}</span></div></div>` : ''}
+
+    <div class="grid g2" style="margin:18px 0">
+      ${topList('Top services', topSvc)}
+      ${topList('Top clients', topCli)}
     </div>
 
     <h3>Therapist commission &amp; tips</h3>
