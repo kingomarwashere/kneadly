@@ -584,7 +584,7 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
       </div>
       <div class="row" style="max-width:360px">
         <div class="field" style="flex:0 0 165px"><label>Start time <span class="muted">(available)</span></label><select name="start" id="st" required><option value="${v.start || '09:00'}">${v.start || '09:00'}</option></select></div>
-        <div class="field" style="flex:0 0 150px"><label>End time</label><input type="time" name="end" id="et" step="300" value="${v.end || '10:00'}" required></div>
+        <div class="field" style="flex:0 0 150px"><label>End time <span class="muted" id="etlock">(auto)</span></label><input type="time" name="end" id="et" step="300" value="${v.end || '10:00'}" required></div>
       </div>
       <div class="row">
         <div class="field"><label>Custom label <span class="muted">(optional)</span></label><input name="custom_name" value="${esc(v.custom_name || '')}" placeholder="e.g. Extended session"></div>
@@ -627,7 +627,16 @@ function bookingForm(shop, staff, services, clients, action, submitLabel, v = {}
     const svc=document.getElementById('svc'),st=document.getElementById('st'),et=document.getElementById('et'),pr=document.getElementById('pr'),clbl=document.querySelector('[name=custom_name]');
     const dateEl=document.querySelector('[name=date]'),staffEl=document.querySelector('[name=staff_id]');
     var EDITING=${v.editing ? 'true' : 'false'};
-    function fillEnd(){const o=svc.selectedOptions[0],d=o&&o.dataset.dur?+o.dataset.dur:0;if(!d||!st.value)return;const p=st.value.split(':').map(Number);let t=Math.min(p[0]*60+p[1]+d,23*60+55);et.value=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');}
+    var etlock=document.getElementById('etlock');
+    // End time is LOCKED to (start + service duration). It's only editable for a
+    // "Custom / other" service that has no set duration.
+    function fillEnd(){const o=svc.selectedOptions[0],d=o&&o.dataset.dur?+o.dataset.dur:0;
+      var locked=d>0;
+      et.readOnly=locked; et.style.background=locked?'#f0efe9':''; et.tabIndex=locked?-1:0;
+      if(etlock)etlock.textContent=locked?'(auto)':'(custom)';
+      if(!d||!st.value)return;
+      const p=st.value.split(':').map(Number);let t=Math.min(p[0]*60+p[1]+d,23*60+55);
+      et.value=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');}
     // Start time only offers times a therapist is genuinely free (date + therapist
     // + service duration). Reloads when any of those change.
     async function loadTimes(){ if(!dateEl||!dateEl.value)return; var cur=st.value;
@@ -883,8 +892,8 @@ app.get('/bookings/:id/edit', async (c) => {
     ${(() => { const col = collectedCents(b), price = b.price_cents || 0; return `<p style="margin-top:-2px;font-size:.9rem">💰 ${b.covered_by ? `<span class="tag completed">Covered by ${b.covered_by} ✓</span>` : (price > 0 && col >= price ? '<span class="tag completed">Paid in full ✓</span>' : `<strong>${money(col, shop.currency)}</strong> collected of <strong>${money(price, shop.currency)}</strong>${col < price ? ` · <span class="muted">${money(price - col, shop.currency)} remaining</span>` : ''}`)}</p>` })()}
     ${['confirmed', 'pending_payment', 'completed'].includes(b.status) ? `<div class="inline" style="gap:8px;margin:0 0 14px;flex-wrap:wrap">
       <a class="btn sm gold" href="/dashboard/bookings/${b.id}/pay">💳 Payments — record cash / take card</a>
-      <a class="btn ghost sm" href="/dashboard/bookings/${b.id}/invoice?type=tax" target="_blank">🧾 Invoice</a>
-      ${shop.health_fund_receipts ? `<a class="btn ghost sm" href="/dashboard/bookings/${b.id}/invoice?type=health" target="_blank">🩺 Rebate receipt</a>` : ''}
+      <a class="btn ghost sm" href="/dashboard/bookings/${b.id}/invoice?type=tax">🧾 Invoice</a>
+      ${shop.health_fund_receipts ? `<a class="btn ghost sm" href="/dashboard/bookings/${b.id}/invoice?type=health">🩺 Rebate receipt</a>` : ''}
       ${['confirmed', 'pending_payment'].includes(b.status) ? `<form method="post" action="/dashboard/bookings/${b.id}/complete"><button class="btn sm">✓ Mark done</button></form>
       <form method="post" action="/dashboard/bookings/${b.id}/no_show"><button class="btn ghost sm">No-show</button></form>
       <form method="post" action="/dashboard/bookings/${b.id}/cancel" onsubmit="return confirm('${b.group_id ? 'Cancel the whole group booking' : 'Cancel this booking'}${b.stripe_charge_id ? ' and refund the deposit' : ''}?')"><button class="btn danger sm">✕ Cancel booking</button></form>` : ''}
