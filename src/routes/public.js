@@ -580,6 +580,55 @@ app.post('/:slug/waitlist', async (c) => {
   return c.redirect(`/${shop.slug}/waitlist?done=1`)
 })
 
+// ─── Health intake form ──────────────────────────────────────────────────────
+const INTAKE_FIELDS = [
+  ['conditions', 'intake_conditions', true], ['injuries', 'intake_injuries', true],
+  ['medications', 'intake_medications', true], ['allergies', 'intake_allergies', true],
+  ['pregnant', 'intake_pregnant', false], ['focus', 'intake_focus', true], ['avoid', 'intake_avoid', true],
+]
+app.get('/:slug/intake/:bid', async (c) => {
+  const db = c.env.DB, lang = c.get('lang')
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published) return c.notFound()
+  const b = await db.prepare('SELECT id, customer_name, client_id FROM bookings WHERE id=? AND shop_id=?').bind(c.req.param('bid'), shop.id).first()
+  if (!b) return c.notFound()
+  const done = c.req.query('done')
+  const inner = done ? `<div class="card" style="padding:30px;text-align:center;margin-top:16px"><div style="font-size:2.4rem">✅</div><h1 style="margin:.2em 0">${esc(t(lang, 'intake_done'))}</h1><p class="muted">${esc(t(lang, 'intake_done_sub', { shop: shop.name }))}</p><p style="margin-top:18px"><a class="btn" href="/${shop.slug}">${esc(t(lang, 'back_to', { shop: shop.name }))}</a></p></div>` : `
+    <h1 style="margin:.3em 0 .1em">🩺 ${esc(t(lang, 'intake_title'))}</h1>
+    <p class="muted" style="margin-top:0">${esc(t(lang, 'intake_sub', { shop: shop.name }))}</p>
+    <form method="post" action="/${shop.slug}/intake/${b.id}" class="card" style="padding:24px;margin-top:12px">
+      <div class="field"><label>${esc(t(lang, 'intake_conditions'))}</label><textarea name="conditions" rows="2" placeholder="${esc(t(lang, 'intake_conditions_ph'))}"></textarea></div>
+      <div class="field"><label>${esc(t(lang, 'intake_injuries'))}</label><textarea name="injuries" rows="2"></textarea></div>
+      <div class="row">
+        <div class="field"><label>${esc(t(lang, 'intake_medications'))}</label><input name="medications"></div>
+        <div class="field"><label>${esc(t(lang, 'intake_allergies'))}</label><input name="allergies"></div>
+      </div>
+      <div class="field"><label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" name="pregnant" value="1" style="width:auto"> ${esc(t(lang, 'intake_pregnant'))}</label></div>
+      <div class="row">
+        <div class="field"><label>${esc(t(lang, 'intake_focus'))}</label><input name="focus"></div>
+        <div class="field"><label>${esc(t(lang, 'intake_avoid'))}</label><input name="avoid"></div>
+      </div>
+      <div class="field"><label>${esc(t(lang, 'intake_pressure'))}</label><select name="pressure"><option value="">—</option><option>Light</option><option>Medium</option><option>Firm</option><option>Deep</option></select></div>
+      <div class="field"><label style="display:flex;align-items:flex-start;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" name="consent" value="1" required style="width:auto;margin-top:3px"> <span>${esc(t(lang, 'intake_consent'))}</span></label></div>
+      <button class="btn gold" style="width:100%">${esc(t(lang, 'intake_submit'))}</button>
+    </form>`
+  return giftPage(c, shop, lang, { title: t(lang, 'intake_title'), inner })
+})
+
+app.post('/:slug/intake/:bid', async (c) => {
+  const db = c.env.DB
+  const shop = await getShopBySlug(db, c.req.param('slug'))
+  if (!shop || !shop.is_published) return c.notFound()
+  const b = await db.prepare('SELECT id, client_id, customer_name, customer_email, customer_phone FROM bookings WHERE id=? AND shop_id=?').bind(c.req.param('bid'), shop.id).first()
+  if (!b) return c.notFound()
+  const f = await c.req.parseBody()
+  const data = { conditions: (f.conditions || '').toString().trim(), injuries: (f.injuries || '').toString().trim(), medications: (f.medications || '').toString().trim(), allergies: (f.allergies || '').toString().trim(), pregnant: f.pregnant ? 'Yes' : '', focus: (f.focus || '').toString().trim(), avoid: (f.avoid || '').toString().trim(), pressure: (f.pressure || '').toString().trim(), consent: f.consent ? 'Agreed' : '' }
+  let clientId = b.client_id
+  if (!clientId) clientId = await findOrCreateClient(db, shop.id, { name: b.customer_name, email: b.customer_email, phone: b.customer_phone })
+  if (clientId) await db.prepare('UPDATE clients SET intake_json=?, intake_at=unixepoch() WHERE id=? AND shop_id=?').bind(JSON.stringify(data), clientId, shop.id).run()
+  return c.redirect(`/${shop.slug}/intake/${b.id}?done=1`)
+})
+
 // ─── Shop public page ────────────────────────────────────────────────────────
 app.get('/:slug', async (c) => {
   const db = c.env.DB
@@ -703,6 +752,17 @@ app.get('/:slug/book', async (c) => {
   // Every active therapist — for the per-guest therapist picker in group bookings.
   const groupStaff = (await db.prepare('SELECT id,name,emoji FROM staff WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
 
+  // Optional add-ons/upsells (price-only). Shown as checkboxes on the form.
+  const addonRows = (await db.prepare('SELECT * FROM addons WHERE shop_id=? AND is_active=1 ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  await Promise.all(addonRows.map(async a => { a.name = await translate(c.env, a.name, lang) }))
+  const addonsHtml = addonRows.length ? `
+    <h3 style="margin:1.2em 0 .3em;font-size:1.05rem">${t(lang, 'addons_title')}</h3>
+    <div class="card" style="padding:6px 16px;margin-bottom:16px">
+      ${addonRows.map(a => `<label style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer">
+        <input type="checkbox" name="addon_${a.id}" value="1" style="width:auto">
+        <span style="flex:1">${esc(a.name)}</span><strong>+ ${money(a.price_cents, shop.currency)}</strong></label>`).join('')}
+    </div>` : ''
+
   const T = {
     loading: t(lang, 'loading'),
     choose_date_first: t(lang, 'choose_date_first'),
@@ -775,6 +835,7 @@ app.get('/:slug/book', async (c) => {
         <div class="field"><label>${t(lang, 'mobile')}</label><input name="phone" placeholder="${t(lang, 'optional')}"></div>
         <div class="field"><label>${t(lang, 'notes_label')}</label><textarea name="notes" rows="2" placeholder="${t(lang, 'notes_ph')}"></textarea></div>
 
+        ${addonsHtml}
         <div id="depositcard" class="card" style="padding:14px 16px;background:#f6f2ec;border-style:dashed;margin-bottom:16px">
           ${depositCents <= 0
             ? t(lang, 'no_deposit_line')
@@ -914,11 +975,19 @@ app.post('/:slug/book', async (c) => {
     items.push({ service: g.svc, staffId: stId, staffName: ctx.staffById[stId]?.name || '', name: g.name, email: '', phone: '', notes: '', clientId: gClient, requested: (g.staff && g.staff !== 'any') ? 1 : 0 })
   }
 
+  // Add-ons / upsells selected for the primary booking (price-only, so the slot
+  // length is unaffected). Stored on the booking and included in the charge.
+  const addonRows = (await db.prepare('SELECT * FROM addons WHERE shop_id=? AND is_active=1').bind(shop.id).all()).results || []
+  const selAddons = addonRows.filter(a => form[`addon_${a.id}`])
+  items[0].addonCents = selAddons.reduce((s, a) => s + a.price_cents, 0)
+  items[0].addonJson = selAddons.length ? JSON.stringify(selAddons.map(a => ({ name: a.name, price_cents: a.price_cents }))) : null
+
   // The upfront charge (deposit % or full price, per the shop's setting) is taken
-  // ONCE for the whole booking/group (sum of each person's).
+  // ONCE for the whole booking/group (sum of each person's, incl. add-ons).
   const pct = chargePct(shop)
-  const dep = (svc) => Math.round(svc.price_cents * pct / 100)
-  const totalDeposit = items.reduce((s, it) => s + dep(it.service), 0)
+  const priceOf = (it) => it.service.price_cents + (it.addonCents || 0)
+  const dep = (it) => Math.round(priceOf(it) * pct / 100)
+  const totalDeposit = items.reduce((s, it) => s + dep(it), 0)
   // Online charges require the shop to have connected Stripe (Connect) with charges
   // enabled. Shops that haven't connected (or that charge nothing) simply take
   // bookings with no upfront payment — that's also the demo/test path.
@@ -932,10 +1001,10 @@ app.post('/:slug/book', async (c) => {
     const id = genId(); ids.push(id)
     await db.prepare(`INSERT INTO bookings
       (id, shop_id, service_id, staff_id, customer_name, customer_email, customer_phone,
-       start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff, group_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+       start_time, end_time, status, price_cents, deposit_cents, service_name, staff_name, notes, lang, client_id, requested_staff, group_id, addons_json, addons_cents)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, shop.id, it.service.id, it.staffId, it.name, it.email, it.phone,
-        startUnix, startUnix + it.service.duration_minutes * 60, status, it.service.price_cents, useStripe ? dep(it.service) : 0, it.service.name, it.staffName, it.notes, c.get('lang') || 'en', it.clientId, it.requested, groupId).run()
+        startUnix, startUnix + it.service.duration_minutes * 60, status, priceOf(it), useStripe ? dep(it) : 0, it.service.name, it.staffName, it.notes, c.get('lang') || 'en', it.clientId, it.requested, groupId, it.addonJson || null, it.addonCents || 0).run()
   }
   const bookingId = ids[0]
 
@@ -991,6 +1060,7 @@ app.get('/:slug/booked/:id', async (c) => {
   if (!shop) return c.notFound()
   const b = await db.prepare('SELECT * FROM bookings WHERE id = ? AND shop_id = ?').bind(c.req.param('id'), shop.id).first()
   if (!b) return c.notFound()
+  const intakeDone = b.client_id ? !!(await db.prepare('SELECT intake_at FROM clients WHERE id=?').bind(b.client_id).first())?.intake_at : false
 
   b.service_name = await translate(c.env, b.service_name, lang)
 
@@ -1023,9 +1093,11 @@ app.get('/:slug/booked/:id', async (c) => {
       <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_service')}</span><strong>${esc(b.service_name)}</strong></div>
       <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_therapist')}</span><strong>${esc(b.staff_name || t(lang, 'our_team'))}</strong></div>
       <div style="display:flex;justify-content:space-between;padding:8px 0${b.group_id ? '' : ';border-bottom:1px solid var(--line)'}"><span class="muted">${t(lang, 'c_when')}</span><strong>${formatBookingTime(b.start_time, shop.timezone)}</strong></div>
+      ${(() => { let a = []; try { a = JSON.parse(b.addons_json || '[]') } catch {} return a.length ? a.map(x => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)"><span class="muted">+ ${esc(x.name)}</span><span>${money(x.price_cents, shop.currency)}</span></div>`).join('') : '' })()}
       ${b.group_id ? '' : `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span class="muted">${t(lang, 'c_price')}</span><strong>${money(b.price_cents, shop.currency)}</strong></div>`}
       ${(b.deposit_cents > 0 && !b.group_id) ? `<div style="display:flex;justify-content:space-between;padding:8px 0"><span class="muted">${t(lang, b.deposit_cents >= b.price_cents ? 'c_paid' : 'c_deposit_paid')}</span><strong>${money(b.deposit_cents, shop.currency)}</strong></div>` : ''}
     </div>
+    ${(shop.intake_enabled && !intakeDone) ? `<a class="btn gold" style="margin-top:14px" href="/${shop.slug}/intake/${b.id}">🩺 ${t(lang, 'intake_cta')} →</a>` : ''}
     ${groupMembers.length ? `<div class="card" style="padding:16px 20px;text-align:left;margin-top:14px">
       <div style="font-weight:600;margin-bottom:4px">👥 ${t(lang, 'group_booked', { n: groupMembers.length + 1 })}</div>
       <div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span>${esc(b.customer_name)}</span><span class="muted">${esc(b.service_name)} · ${esc(b.staff_name || '')} · ${money(b.price_cents, shop.currency)}</span></div>

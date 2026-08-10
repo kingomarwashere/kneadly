@@ -1188,7 +1188,8 @@ function invoiceInner(shop, b, st, svc, pays, kind) {
     <div style="margin-top:16px;font-size:.95rem"><span style="color:#555">Billed to:</span> <strong>${esc(b.customer_name || '')}</strong>${b.customer_email ? ` · ${esc(b.customer_email)}` : ''}</div>
     <div style="margin-top:14px">
       <div style="display:flex;justify-content:space-between;padding:6px 0;font-weight:700;border-bottom:2px solid #000"><span>Description</span><span>Amount</span></div>
-      ${row(`${esc(b.service_name || 'Appointment')} — ${esc(formatBookingTime(b.start_time, shop.timezone))}`, money(b.price_cents, cur))}
+      ${row(`${esc(b.service_name || 'Appointment')} — ${esc(formatBookingTime(b.start_time, shop.timezone))}`, money((b.price_cents || 0) - (b.addons_cents || 0), cur))}
+      ${(() => { let a = []; try { a = JSON.parse(b.addons_json || '[]') } catch {} return a.map(x => row(`+ ${esc(x.name)}`, money(x.price_cents, cur))).join('') })()}
       ${shop.gst_registered ? row('Includes GST', money(gst, cur)) : ''}
       ${row('Total', money(b.price_cents, cur), true)}
       ${collected > 0 ? row('Paid', '− ' + money(Math.min(collected, b.price_cents || collected), cur)) : ''}
@@ -1640,6 +1641,7 @@ app.post('/day-sheet/reset', async (c) => {
 app.get('/services', async (c) => {
   const db = c.env.DB, shop = c.get('shop')
   const rows = (await db.prepare('SELECT * FROM services WHERE shop_id = ? ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
+  const addons = (await db.prepare('SELECT * FROM addons WHERE shop_id=? ORDER BY sort_order, created_at').bind(shop.id).all()).results || []
   return shell(c, 'services', 'Services', `
     <h2>Services</h2>
     <div class="card" style="padding:6px 18px;margin-bottom:20px">
@@ -1680,7 +1682,33 @@ app.get('/services', async (c) => {
         <button class="btn ghost sm">Save</button>
       </form>`).join('')}
     </div>` : ''}
+
+    <div class="card" style="padding:22px;margin-top:18px">
+      <h3 style="margin-top:0">➕ Add-ons &amp; upsells</h3>
+      <p class="muted" style="font-size:.85rem;margin-top:0">Optional extras customers can tick when booking (e.g. hot stones, aromatherapy) — added to the price. A great way to lift each sale.</p>
+      ${addons.length ? addons.map(a => `<div class="inline" style="justify-content:space-between;border-top:1px solid var(--line);padding:8px 0">
+        <span>${a.is_active ? '' : '🚫 '}<strong>${esc(a.name)}</strong> <span class="muted">· +${money(a.price_cents, shop.currency)}</span></span>
+        <form method="post" action="/dashboard/addons/${a.id}/toggle"><button class="btn ghost sm">${a.is_active ? 'Deactivate' : 'Activate'}</button></form>
+      </div>`).join('') : '<p class="muted">No add-ons yet.</p>'}
+      <form method="post" action="/dashboard/addons" class="inline" style="gap:8px;margin-top:12px;flex-wrap:wrap">
+        <input name="name" placeholder="Hot stones" required style="flex:1;min-width:150px">
+        <input type="number" name="price" placeholder="Price" min="0" step="1" required style="max-width:110px">
+        <button class="btn sm">Add</button>
+      </form>
+    </div>
   `)
+})
+
+app.post('/addons', async (c) => {
+  const db = c.env.DB, shop = c.get('shop'), f = await c.req.parseBody()
+  const name = (f.name || '').toString().trim(); if (!name) return c.redirect('/dashboard/services')
+  await db.prepare('INSERT INTO addons (id, shop_id, name, price_cents, sort_order) VALUES (?,?,?,?,?)')
+    .bind(genId(), shop.id, name, Math.max(0, Math.round((parseFloat(f.price) || 0) * 100)), Math.floor(Date.now() / 1000)).run()
+  return c.redirect('/dashboard/services')
+})
+app.post('/addons/:id/toggle', async (c) => {
+  await c.env.DB.prepare('UPDATE addons SET is_active = 1 - is_active WHERE id=? AND shop_id=?').bind(c.req.param('id'), c.get('shop').id).run()
+  return c.redirect('/dashboard/services')
 })
 
 app.post('/services', async (c) => {
@@ -1952,6 +1980,7 @@ app.get('/settings', async (c) => {
           <div class="field"><label>Fee value <span class="muted">(${shop.currency.toUpperCase()} or %)</span></label><input type="number" name="no_show_fee_value" min="0" step="0.01" value="${shop.no_show_fee_type === 'percent' ? (shop.no_show_fee_value || 0) : ((shop.no_show_fee_value || 0) / 100)}"></div>
         </div>
         <p class="muted" style="font-size:.82rem;margin:0">Shown to customers before they book. A paid deposit is kept toward the fee; any remainder can be collected via Payments. (We never store card details, so fees aren’t auto-charged without a deposit.)</p>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer;margin:14px 0 2px;border-top:1px solid var(--line);padding-top:14px"><input type="checkbox" name="intake_enabled" value="1" style="width:auto" ${shop.intake_enabled ? 'checked' : ''}> Ask customers to complete a <strong>health intake form</strong> (offered after booking; saved to the client)</label>
       </div>
       <div class="card" style="padding:22px;margin-bottom:18px">
         <h3 style="margin-top:0">🕑 Opening hours</h3>
@@ -2057,7 +2086,7 @@ app.post('/settings', async (c) => {
   await db.prepare(`UPDATE shops SET name=?, emoji=?, tagline=?, about=?, slug=?, accent=?, phone=?, email=?,
     address=?, suburb=?, state=?, postcode=?, timezone=?, charge_mode=?, deposit_pct=?, cancellation_hours=?, slot_interval_minutes=?, hours_json=?, google_review_url=?, loyalty_enabled=?,
     legal_name=?, abn=?, gst_registered=?, invoice_footer=?, health_fund_receipts=?,
-    waitlist_enabled=?, no_show_fee_enabled=?, no_show_fee_type=?, no_show_fee_value=? WHERE id=?`)
+    waitlist_enabled=?, no_show_fee_enabled=?, no_show_fee_type=?, no_show_fee_value=?, intake_enabled=? WHERE id=?`)
     .bind((f.name || shop.name).toString().trim(), (f.emoji || '💆').toString().trim() || '💆',
       (f.tagline || '').toString(), (f.about || '').toString(), slug, (f.accent || '#0f766e').toString(),
       (f.phone || '').toString(), (f.email || '').toString(), (f.address || '').toString(),
@@ -2067,6 +2096,7 @@ app.post('/settings', async (c) => {
       (f.legal_name || '').toString().trim() || null, (f.abn || '').toString().trim() || null, f.gst_registered ? 1 : 0, (f.invoice_footer || '').toString().trim() || null, f.health_fund_receipts ? 1 : 0,
       f.waitlist_enabled ? 1 : 0, f.no_show_fee_enabled ? 1 : 0, (f.no_show_fee_type === 'percent' ? 'percent' : 'amount'),
       (f.no_show_fee_type === 'percent' ? Math.max(0, Math.min(100, Math.round(parseFloat(f.no_show_fee_value) || 0))) : Math.max(0, Math.round((parseFloat(f.no_show_fee_value) || 0) * 100))),
+      f.intake_enabled ? 1 : 0,
       shop.id).run()
 
   // Replace loyalty tiers from the form rows.
@@ -2305,6 +2335,12 @@ app.get('/clients/:id', async (c) => {
         <button class="btn">Save</button>
       </form>
       <div>
+        ${(() => { let ik = null; try { ik = cl.intake_json ? JSON.parse(cl.intake_json) : null } catch {} if (!ik) return ''
+          const row = (l, v) => v ? `<div style="display:flex;gap:8px;padding:4px 0"><span class="muted" style="flex:0 0 130px">${l}</span><span>${esc(v)}</span></div>` : ''
+          return `<div class="card" style="padding:16px 18px;margin-bottom:14px;background:#f4faf8">
+            <h3 style="margin:0 0 6px">🩺 Health form <span class="muted" style="font-weight:400;font-size:.8rem">${cl.intake_at ? '· ' + esc(formatBookingTime(cl.intake_at, shop.timezone).split(',').slice(0, 2).join(',')) : ''}</span></h3>
+            ${row('Conditions', ik.conditions)}${row('Injuries/pain', ik.injuries)}${row('Medications', ik.medications)}${row('Allergies', ik.allergies)}${row('Pregnant', ik.pregnant)}${row('Focus areas', ik.focus)}${row('Avoid', ik.avoid)}${row('Pressure', ik.pressure)}${row('Consent', ik.consent)}
+          </div>` })()}
         <h3>Booking history</h3>
         ${history.length ? `<div class="card" style="padding:6px 18px"><table>
           <tr><th>When</th><th>Service</th><th>Therapist</th><th>Paid</th><th>Status</th><th>Notes</th></tr>

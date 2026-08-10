@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS shops (
   no_show_fee_enabled INTEGER NOT NULL DEFAULT 0,   -- charge/record a no-show fee
   no_show_fee_type TEXT NOT NULL DEFAULT 'amount',  -- amount | percent
   no_show_fee_value INTEGER NOT NULL DEFAULT 0,     -- cents (amount) or percent of price
+  intake_enabled INTEGER NOT NULL DEFAULT 0,        -- ask customers to complete a health intake form
   is_published INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
@@ -221,6 +222,8 @@ CREATE TABLE IF NOT EXISTS clients (
   phone TEXT,
   notes TEXT,
   loyalty_redeemed INTEGER NOT NULL DEFAULT 0,  -- loyalty rewards already redeemed
+  intake_json TEXT,               -- completed health intake form (JSON)
+  intake_at INTEGER,              -- when the intake form was last completed
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
@@ -376,6 +379,20 @@ CREATE TABLE IF NOT EXISTS waitlist (
 );
 CREATE INDEX IF NOT EXISTS idx_waitlist_shop ON waitlist(shop_id, date, status);
 
+-- Optional booking add-ons / upsells (e.g. "Hot stones +$20", "+30 min").
+CREATE TABLE IF NOT EXISTS addons (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  price_cents INTEGER NOT NULL DEFAULT 0,
+  duration_minutes INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_addons_shop ON addons(shop_id);
+
 -- Days a therapist is off (holidays, sick days) — blocks that whole date
 CREATE TABLE IF NOT EXISTS time_off (
   id TEXT PRIMARY KEY,
@@ -421,6 +438,8 @@ CREATE TABLE IF NOT EXISTS bookings (
   gift_card_id TEXT,                           -- gift card redeemed on this booking (nullable)
   covered_by TEXT,                             -- 'package' | 'membership' when a prepaid session covers this booking
   no_show_fee_cents INTEGER NOT NULL DEFAULT 0,-- fee recorded when marked no-show
+  addons_json TEXT,                            -- selected add-ons [{name,price_cents}]
+  addons_cents INTEGER NOT NULL DEFAULT 0,     -- total add-on price added to this booking
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,
   FOREIGN KEY (service_id) REFERENCES services(id),

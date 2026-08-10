@@ -108,6 +108,16 @@ const DICT = {
     wl_date_opt: 'Preferred date (optional)', wl_any_service: 'Any service', wl_join_btn: 'Join the waitlist →',
     wl_done: 'You’re on the list! 📝', wl_done_sub: 'We’ll email you if a spot opens at {shop}.', wl_cta: 'Fully booked? Join the waitlist',
     noshow_policy: 'A no-show fee of {fee} applies if you don’t attend and don’t cancel in time.',
+    // Add-ons
+    addons_title: 'Add extras',
+    // Health intake form
+    intake_title: 'Health intake form', intake_sub: 'Please complete this before your visit to {shop} so your therapist can treat you safely.',
+    intake_conditions: 'Medical conditions', intake_conditions_ph: 'e.g. high blood pressure, diabetes…',
+    intake_injuries: 'Injuries or areas of pain', intake_medications: 'Current medications', intake_allergies: 'Allergies',
+    intake_pregnant: 'Currently pregnant', intake_focus: 'Areas to focus on', intake_avoid: 'Areas to avoid', intake_pressure: 'Preferred pressure',
+    intake_consent: 'I confirm the above is accurate and consent to treatment. I’ll disclose anything relevant to my therapist.',
+    intake_submit: 'Submit health form', intake_done: 'Thank you! ✅', intake_done_sub: 'Your health form has been shared with {shop}.',
+    intake_cta: 'Complete your health form before your visit',
     demo_pill: 'Try it — no signup', demo_title: 'See a real booking page',
     demo_sub: 'These are live example shops. Click through, pick a service and time, and make a test booking — exactly what your clients would do.',
     demo_book_test: 'Book a test appointment →',
